@@ -89,9 +89,9 @@ Si la app tiene su propio motor de dibujo (como Arcilla), declara `APP_FLAG_RAW_
 - Dibuja con `sys_raw_draw(x, y, w, h, pixeles)`: RGB565 con bytes invertidos (`sys_rgb565(0xRRGGBB)` convierte un color), el buffer puede estar en PSRAM, y `x`, `y`, `w`, `h` deben ser pares.
 - Si la app usa el deslizamiento desde arriba para otra cosa, agrega `APP_FLAG_NO_HOME_GESTURE` y ofrece una opción "Salir" que llame `sys_go_home()`.
 
-### Integrar Arcilla
+### Ejemplo: Arcilla
 
-Su motor (`components/game`) ya es portable y solo pide cuatro funciones; dentro de `apps/arcilla/` se conectan así:
+Arcilla ya está integrada (`apps/arcilla/arcilla.c`). Su motor (`apps/arcilla/game/`) es portable y solo pide estas funciones:
 
 | Arcilla pide | Se implementa con |
 | --- | --- |
@@ -101,7 +101,7 @@ Su motor (`components/game`) ya es portable y solo pide cuatro funciones; dentro
 | `platform_random_byte()` | `esp_random()` |
 | `board_flush()` del framebuffer | `sys_raw_draw(0, 0, 360, 360, fb)` |
 
-Su `main.c` y su `board.c` ya no se usan: el sistema inicializa la placa. La perilla y el touch llegan por `on_knob` y `on_touch`, y "volver" en su menú principal llama `sys_go_home()`.
+`sys_raw_draw` copia los píxeles a sus propias tiras DMA y espera a que terminen, así que el búfer de la app puede reutilizarse en cuanto regresa. La perilla y el touch llegan por `on_knob` y `on_touch`, y "volver" en su menú principal llama `sys_go_home()`.
 
 ## 7. Probar
 

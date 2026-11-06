@@ -35,6 +35,6 @@
 | Reloj (hora manual hasta tener Wi-Fi) | `apps/clock/` | v0.1.0 |
 | Contador (ejemplo y prueba de NVS) | `apps/counter/` | v0.1.0 |
 | Ajustes | `apps/settings/` | v0.1.0 |
-| Arcilla | `apps/arcilla/` | Falta subir su código al repo e integrarlo (ver `docs/nueva-app.md`, sección 6) |
+| Arcilla (juego táctico, pantalla propia) | `apps/arcilla/` | v0.6.0 (ver `apps/arcilla/README.md`) |
 | Notas, Alarmas, Biddy, Gato | `apps/notes`, `apps/alarms`, `apps/assistant`, `apps/tictactoe` | Por construir (Fase 1) |
 | Wi-Fi y hora por SNTP | `components/net/` (nuevo, compartido) | Por construir (Fase 1, hito 4) |
