@@ -18,7 +18,16 @@
 4. **No cambiar la fila `nvs` de `partitions.csv`.** Moverla o cambiar su tamaño borra los datos de todas las apps.
 5. **Compilar el firmware completo antes de entregar.** Un cambio está listo solo cuando `idf.py build` pasa con todas las apps.
 6. **Commits pequeños con el nombre de la app**, por ejemplo `notes: borrar con confirmación`. Después, `git push` a `main`.
-7. **Flashear solo desde el repo:** `git pull` y luego, en `firmware/`, `idf.py -p COM5 build flash monitor`.
+7. **Flashear solo desde el repo**, en la terminal de ESP-IDF de VS Code (`(venv)` sin punto, IDF 5.4.4) y con la placa en COM5:
+
+   ```
+   cd C:\dev\heybiddy
+   git pull
+   cd firmware
+   idf.py -p COM5 build flash monitor
+   ```
+
+   `C:\dev\heybiddy` es el clon de GitHub. `C:\dev\hey-biddy` es una copia vieja sin git (ahí sigue el venv del servidor) y no se usa para flashear. Salir del monitor: Ctrl+]. Si la compilación falla por restos de una anterior: `idf.py fullclean` (solo borra `build/` en el PC).
 8. **Nunca usar `idf.py erase-flash`** ni flashear un `.bin` con `write-flash 0x0`: borraría notas, alarmas y ajustes.
 9. **Si algo se rompe:** `git log` muestra qué commit lo causó; `git revert <commit>` lo deshace sin tocar lo demás, y luego se vuelve a flashear.
 
