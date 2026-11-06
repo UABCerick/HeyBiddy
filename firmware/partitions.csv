@@ -1,0 +1,16 @@
+# Tabla de particiones de Hey Biddy (flash de 16 MB)
+#
+# IMPORTANTE: no cambies la fila "nvs" (ni su posicion ni su tamano).
+# Ahi viven los datos de todas las apps (notas, alarmas, ajustes, partidas...).
+# Mientras esa fila no cambie, flashear un firmware nuevo NO borra esos datos.
+#
+# ota_0 / ota_1 quedan listas para las actualizaciones por Wi-Fi (Fase 4).
+# "storage" queda libre para archivos grandes (avatares, sonidos).
+#
+# Name,    Type, SubType,  Offset,   Size
+nvs,       data, nvs,      0x9000,   0x20000
+otadata,   data, ota,      0x29000,  0x2000
+phy_init,  data, phy,      0x2B000,  0x1000
+ota_0,     app,  ota_0,    0x30000,  0x600000
+ota_1,     app,  ota_1,    0x630000, 0x600000
+storage,   data, spiffs,   0xC30000, 0x3D0000

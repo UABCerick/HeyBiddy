@@ -1,0 +1,21 @@
+# ESP-IDF
+firmware/build/
+firmware/sdkconfig
+firmware/sdkconfig.old
+firmware/managed_components/
+firmware/dependencies.lock
+# respaldos y binarios
+*.bin
+!firmware/components/**/*.bin
+# secretos
+.env
+*.env
+# Python
+server/.venv/
+__pycache__/
+# editores
+.vscode/
+.idea/
+.DS_Store
+firmware/host/build/
+firmware/host/capturas/

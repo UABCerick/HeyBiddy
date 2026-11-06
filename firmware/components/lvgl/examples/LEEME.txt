@@ -1,0 +1,1 @@
+Vacio a proposito: los ejemplos y demos de LVGL no se incluyen en Hey Biddy.
