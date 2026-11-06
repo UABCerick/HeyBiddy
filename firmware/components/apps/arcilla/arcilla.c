@@ -34,7 +34,7 @@
 #include <time.h>
 #endif
 
-#define ARCILLA_VERSION "0.7.1"
+#define ARCILLA_VERSION "0.7.2"
 #define APP_ID "arcilla"
 #define STRIP 48   /* filas por envío: sys_raw_draw manda dos tiras de 24 seguidas sin esperar entre ellas */
 

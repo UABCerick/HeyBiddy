@@ -143,9 +143,10 @@ static struct {
     uint32_t cam_t;
     /* contra Biddy: el jugador 1 lo maneja brain.c */
     bool vs; level_t lvl; int doctrine, lvl_idx; bool recorded;
+    int dep_last;   /* de quién era la última casilla de despliegue mostrada (para mover la cámara) */
     struct { int state; uint32_t at, t0; brain_decision_t d; int steps, active; int clicks, want; } ai;
 } U;
-enum { AI_IDLE, AI_THINK, AI_SHOW_ACTION, AI_SHOW_TARGET };
+enum { AI_IDLE, AI_THINK, AI_SHOW_ACTION, AI_SHOW_TARGET, AI_DEPLOY_SHOW };
 #define BIDDY 1
 
 static uint32_t NOW;
@@ -342,7 +343,7 @@ static void start_battle(int map) {
     game_new(&U.g, map, &U.armies[0], &U.armies[1]); U.has_game = true; layout_board(U.g.w, U.g.h);
     U.last_seq = 0; memset(U.anims, 0, sizeof U.anims); memset(U.parts, 0, sizeof U.parts);
     U.dmg[0] = U.dmg[1] = U.kills[0] = U.kills[1] = U.rolls = U.crits[0] = U.crits[1] = 0;
-    U.ai.state = AI_IDLE; U.ai.at = 0; U.recorded = false; brain_cancel();
+    U.ai.state = AI_IDLE; U.ai.at = 0; U.recorded = false; U.dep_last = -1; brain_cancel();
     pump(); U.deploy_idx = 0; go(SC_DEPLOY);
 }
 static void after_deploy(void) {
@@ -589,12 +590,21 @@ static void ai_dice(void) {
 static void ai_drive(void) {
     game_t *g = &U.g;
     if (U.scene == SC_DEPLOY && U.vs && g->phase == PH_DEPLOY) {
-        if (g->deploy_q[g->dq_head].player == BIDDY && NOW >= U.ai.at) {
-            target_t c[MAX_TARGETS]; int n = deploy_cells(g, c);
-            if (n) { int i = brain_deploy_index(g, U.lvl); U.deploy_idx = i; place_next(g, c[i].x, c[i].y); }
-            else auto_place_rest(g);
-            after_deploy(); U.ai.at = NOW + 380;
+        if (g->deploy_q[g->dq_head].player != BIDDY || NOW < U.ai.at) return;
+        target_t c[MAX_TARGETS]; int n = deploy_cells(g, c);
+        if (!n) { auto_place_rest(g); after_deploy(); return; }
+        if (U.ai.state != AI_DEPLOY_SHOW) {
+            /* 1) la cámara va a su lado y se ve su criatura en la casilla que eligió */
+            U.deploy_idx = brain_deploy_index(g, U.lvl);
+            cam_center_world(c[U.deploy_idx].x * CELL + CELL / 2.0f, c[U.deploy_idx].y * CELL + CELL / 2.0f, c[U.deploy_idx].x, c[U.deploy_idx].y);
+            U.dep_last = BIDDY; U.ai.state = AI_DEPLOY_SHOW; U.ai.at = NOW + 650;
+            return;
         }
+        /* 2) la coloca y deja verla un momento antes de devolverte el control */
+        int i = U.deploy_idx < n ? U.deploy_idx : 0;
+        place_next(g, c[i].x, c[i].y); haptic(HAP_THUD);
+        U.ai.state = AI_IDLE; U.ai.at = NOW + 350; U.busy_until = NOW + 350;
+        after_deploy();
         return;
     }
     if (!ai_turn() || U.cut.on || U.after_action_at || U.victory_at || NOW < U.busy_until) return;
@@ -1233,7 +1243,13 @@ static void sc_deploy(void) {
     for (int i = 0; i < n; i++) o.hl[o.nhl++] = (hl_t){cells[i].x, cells[i].y, tint(pl), 56};
     o.cursor = true; o.cx = cells[U.deploy_idx].x; o.cy = cells[U.deploy_idx].y; o.cc = TEAM[pl].l;
     o.ghost = true; o.gx = o.cx; o.gy = o.cy; o.gcid = cid; o.gp = pl;
-    { float dt = fminf(0.1f, (NOW - U.cam_t) / 1000.0f); U.cam_t = NOW; cam_focus(o.cx, o.cy); cam_update(dt); }
+    bool waiting = U.vs && pl == BIDDY && U.ai.state != AI_DEPLOY_SHOW;   /* Biddy aún no elige: sin cursor */
+    if (pl != U.dep_last && !waiting && NOW >= U.busy_until) {
+        /* cambió quién despliega: la cámara va a su lado */
+        U.dep_last = pl; cam_center_world(o.cx * CELL + CELL / 2.0f, o.cy * CELL + CELL / 2.0f, o.cx, o.cy);
+    }
+    if (waiting) { o.cursor = false; o.ghost = false; }
+    { float dt = fminf(0.1f, (NOW - U.cam_t) / 1000.0f); U.cam_t = NOW; if (!waiting && NOW >= U.busy_until) cam_focus(o.cx, o.cy); cam_update(dt); }
     draw_board(&o);
     panel(96, 30, 168, 40, TEAM[pl].b); panel(46, 290, 268, 62, C_GOLD);
     txt(T->deploy, CX, 40, F_S, C_DIM);

@@ -63,7 +63,13 @@ int main(int argc, char **argv) {
     build_army(NULL); in(IN_TAP, 900); if (shots) save("08_reveal"); tick(800); in(IN_TAP, 300);
   }
   for (int k = 0; k < map; k++) in(IN_R, 60);
-  if (shots) save("09_map"); in(IN_TAP, 400); if (shots) save("10_deploy"); in(IN_LONG, 1500); if (shots) save("11_battle");
+  if (shots) save("09_map"); in(IN_TAP, 400); if (shots) save("10_deploy");
+  if (vs >= 0) {
+    /* despliegue de uno en uno: tú colocas, Biddy muestra dónde y coloca */
+    in(IN_TAP, 120); tick(200); if (shots) save("10a_biddy_elige"); tick(500); if (shots) save("10b_biddy_coloca"); tick(500); if (shots) save("10c_tu_turno");
+    in(IN_TAP, 1300);
+  }
+  in(IN_LONG, 1500); if (shots) save("11_battle");
   int ai_shots = 0;
   int seen[16] = {0}; char name[64];
   for (int step = 0; step < 20000; step++) {

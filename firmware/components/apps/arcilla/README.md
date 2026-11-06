@@ -4,7 +4,7 @@ Juego táctico de criaturas de arcilla para dos jugadores o contra Biddy (Fácil
 Es una app de Hey Biddy: se abre desde el menú circular (icono de flechas cruzadas) y vuelve al
 menú con la opción **Salir** del menú del juego. La partida queda en memoria hasta apagar la placa.
 
-Versión de la app: `ARCILLA_VERSION` en `arcilla.c` (0.7.1).
+Versión de la app: `ARCILLA_VERSION` en `arcilla.c` (0.7.2).
 
 Cómo juega Biddy, cómo se miden los niveles y qué queda listo para la personalidad: [`IA.md`](IA.md).
 
