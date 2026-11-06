@@ -3,7 +3,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-const ai_profile_t AI_DEFAULT = {.objective = 0.35f, .aggression = 0.12f, .caution = 0.45f, .noise = 0.25f, .use_powers = true};
+const ai_profile_t AI_DEFAULT = {.objective = 0.35f, .aggression = 0.12f, .caution = 0.45f, .noise = 0.25f, .use_powers = true, .expand = 10};
+void (*ai_yield_hook)(void) = NULL;
 
 static float frand(void) { return (platform_random_byte() * 256 + platform_random_byte()) / 65536.0f; }
 static int iabs(int v) { return v < 0 ? -v : v; }
@@ -85,6 +86,7 @@ static float value_with(const game_t *s, int P, const ai_profile_t *pf) {
     return v;
 }
 float ai_value(const game_t *s, int player) { return value_with(s, player, &AI_DEFAULT); }
+float ai_value_with(const game_t *s, int player, const ai_profile_t *pf) { return value_with(s, player, pf); }
 
 /* ---------- Pasos y su valor esperado ---------- */
 typedef struct { ai_step_t st; float v; } cand_t;
@@ -155,10 +157,9 @@ static float best_plan(game_t *s, int P, const ai_profile_t *pf, ai_step_t *firs
     ai_step_t steps[MAXC]; int n = gen_steps(s, steps);
     cand_t cand[MAXC]; int nc = 0; memset(cand, 0, sizeof cand);
     for (int i = 0; i < n; i++) { c1 = *s; cand[nc].st = steps[i]; cand[nc].v = apply_step(&c1, steps[i], P, pf); nc++; }
-    /* expande el segundo paso para los 10 mejores primeros pasos */
+    /* expande el segundo paso para los mejores primeros pasos (cuántos: pf->expand) */
     for (int i = 1; i < nc; i++) for (int j = i; j > 0 && cand[j].v > cand[j - 1].v; j--) { cand_t k = cand[j]; cand[j] = cand[j - 1]; cand[j - 1] = k; }
-    float best = cand[0].v; *first = cand[0].st;
-    int expand = nc < 10 ? nc : 10;
+    int expand = nc < pf->expand ? nc : pf->expand;
     for (int i = 0; i < expand; i++) {
         if (cand[i].st.type == AS_END) continue;
         c1 = *s; apply_step(&c1, cand[i].st, P, pf);
@@ -166,8 +167,17 @@ static float best_plan(game_t *s, int P, const ai_profile_t *pf, ai_step_t *firs
         ai_step_t s2[MAXC]; int n2 = gen_steps(&c1, s2);
         for (int j = 1; j < n2; j++) {
             c2 = c1; float v = apply_step(&c2, s2[j], P, pf);
-            if (v > best) { best = v; *first = cand[i].st; }
+            if (v > cand[i].v) cand[i].v = v;   /* un primer paso vale lo mejor que permite después */
         }
+    }
+    int bi = 0; for (int i = 1; i < nc; i++) if (cand[i].v > cand[bi].v) bi = i;
+    float best = cand[bi].v; *first = cand[bi].st;
+    if (pf->margin > 0) {
+        /* niveles bajos: cualquier paso "casi tan bueno" puede salir, más probable cuanto mejor sea */
+        float tot = 0, w[MAXC];
+        for (int i = 0; i < nc; i++) { float gap = best - cand[i].v; w[i] = gap <= pf->margin ? 1.0f - gap / pf->margin + 0.15f : 0; tot += w[i]; }
+        float r = frand() * tot;
+        for (int i = 0; i < nc; i++) { if (w[i] <= 0) continue; r -= w[i]; if (r <= 0) { *first = cand[i].st; return cand[i].v; } }
     }
     return best;
 }
@@ -182,7 +192,10 @@ ai_step_t ai_next_step(game_t *s, const ai_profile_t *pf) {
 int ai_choose_unit(game_t *s, const ai_profile_t *pf) {
     int ids[MAX_UNITS]; int n = selectable_units(s, ids); if (!n) return -1;
     static game_t c; int best_id = ids[0]; float best = -1e9f;
+    /* para comparar criaturas basta una búsqueda más corta; el paso real se piensa completo después */
+    ai_profile_t q = *pf; if (q.expand > 24) q.expand = 24; pf = &q;
     for (int i = 0; i < n; i++) {
+        if (ai_yield_hook) ai_yield_hook();
         c = *s; activate(&c, ids[i]);
         ai_step_t st; float v = best_plan(&c, s->current, pf, &st) + frand() * pf->noise;
         if (v > best) { best = v; best_id = ids[i]; }
@@ -234,7 +247,7 @@ bool ai_choose_power(game_t *s, const ai_profile_t *pf, ai_power_t *out) {
             if (v > best && v > 0.4f) { best = v; *out = (ai_power_t){true, P_HASTE, -1, 0, 0}; }
         }
     }
-    if (out->use && frand() < pf->noise * 0.2f) out->use = false;
+    if (out->use && frand() < pf->noise * 0.2f + pf->power_skip) out->use = false;
     return out->use;
 }
 

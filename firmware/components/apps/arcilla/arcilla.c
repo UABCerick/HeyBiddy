@@ -8,6 +8,10 @@
  *   perilla: elegir · tocar: confirmar · mantener: volver · deslizar: mover el mapa
  *   Salir: opción "Salir" del menú del juego, o deslizar hacia abajo desde el borde de arriba.
  *
+ * Contra Biddy: la IA (game/brain.c) piensa en su propia tarea, en el núcleo 0, para que la
+ * pantalla siga animando mientras decide. Su memoria (nivel, ejércitos recientes, marcador)
+ * se guarda en el espacio de NVS "arcilla", clave "brain".
+ *
  * Herramientas de PC (pruebas, simulador, laboratorio de balance, arte): ver README.md.
  */
 #include <stdlib.h>
@@ -18,15 +22,19 @@
 #include "game/engine.h"
 #include "game/gfx.h"
 #include "game/ui.h"
+#include "game/brain.h"
 #ifdef ESP_PLATFORM
 #include "esp_timer.h"
 #include "esp_random.h"
 #include "esp_heap_caps.h"
+#include "esp_log.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
 #else
 #include <time.h>
 #endif
 
-#define ARCILLA_VERSION "0.6.0"
+#define ARCILLA_VERSION "0.7.0"
 #define APP_ID "arcilla"
 #define STRIP 24   /* filas por envío a la pantalla */
 
@@ -60,6 +68,49 @@ void hal_save_settings(lang_t lang, bool haptic_on)
     storage_set_blob(APP_ID, "cfg", &c, sizeof c);
 }
 void hal_exit(void) { sys_go_home(); }
+
+bool hal_load(const char *key, void *data, int len)
+{
+    size_t n = (size_t)len;
+    return storage_get_blob(APP_ID, key, data, &n) == 0 && n == (size_t)len;
+}
+void hal_store(const char *key, const void *data, int len) { storage_set_blob(APP_ID, key, data, (size_t)len); }
+
+/* ---- Biddy piensa en segundo plano ---- */
+#ifdef ESP_PLATFORM
+static TaskHandle_t s_think_task;
+static void (*volatile s_think_fn)(void);
+static int64_t s_last_yield;
+static void think_yield(void)
+{
+    /* la IA llama esto seguido; cede la CPU cada ~40 ms para no bloquear el núcleo 0 */
+    int64_t now = esp_timer_get_time();
+    if (now - s_last_yield > 40000) { vTaskDelay(1); s_last_yield = esp_timer_get_time(); }
+}
+static void think_task(void *arg)
+{
+    (void)arg;
+    for (;;) {
+        ulTaskNotifyTake(pdTRUE, portMAX_DELAY);
+        void (*fn)(void) = s_think_fn;
+        if (!fn) continue;
+        int64_t t0 = esp_timer_get_time(); s_last_yield = t0;
+        fn();
+        ESP_LOGI("arcilla", "Biddy pensó %d ms", (int)((esp_timer_get_time() - t0) / 1000));
+    }
+}
+void hal_think_async(void (*fn)(void))
+{
+    if (!s_think_task) {
+        ai_yield_hook = think_yield;
+        if (xTaskCreatePinnedToCore(think_task, "biddy_ai", 12288, NULL, 2, &s_think_task, 0) != pdPASS) { s_think_task = NULL; fn(); return; }
+    }
+    s_think_fn = fn;
+    xTaskNotifyGive(s_think_task);
+}
+#else
+void hal_think_async(void (*fn)(void)) { fn(); }   /* en la PC piensa en el momento */
+#endif
 
 /* ---- Estado de la app ---- */
 static uint16_t *s_fb, *s_bg, *s_strip;

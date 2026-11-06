@@ -14,8 +14,12 @@ typedef struct {
     float objective;   /* cuánto le atraen los puntos de control */
     float aggression;  /* cuánto le atrae acercarse a enemigos */
     float caution;     /* cuánto teme quedar expuesto */
-    float noise;       /* aleatoriedad para variar partidas */
+    float noise;       /* aleatoriedad al elegir qué criatura activar */
     bool use_powers;
+    /* Nivel de juego (los usa brain.c para fácil, medio y difícil) */
+    int expand;        /* cuántos primeros pasos se miran a 2 pasos (0 = solo 1 paso) */
+    float margin;      /* > 0: elige al azar entre los pasos que valen casi lo mismo que el mejor */
+    float power_skip;  /* probabilidad de no usar un poder que convenía */
 } ai_profile_t;
 extern const ai_profile_t AI_DEFAULT;
 
@@ -28,3 +32,8 @@ void ai_play_decision(game_t *s, const ai_profile_t *pf);
 void ai_random_army(army_t *a);
 void ai_deploy(game_t *s);
 float ai_value(const game_t *s, int player);
+float ai_value_with(const game_t *s, int player, const ai_profile_t *pf);
+
+/* La placa lo apunta a una función que cede la CPU (la IA piensa en su propia tarea).
+   Se llama entre criatura y criatura al elegir; en la PC queda en NULL. */
+extern void (*ai_yield_hook)(void);

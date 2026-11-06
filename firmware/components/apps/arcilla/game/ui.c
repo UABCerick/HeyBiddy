@@ -8,6 +8,7 @@
 #include "texts.h"
 #include "art_data.h"
 #include "hiart_data.h"
+#include "brain.h"
 
 #define F_XS (&FONT_XS)
 #define F_S (&FONT_S)
@@ -100,7 +101,7 @@ static void icon(int id, int x, int y, int sc, uint8_t alpha) {
 }
 
 /* ---------- Estado ---------- */
-typedef enum { SC_SPLASH, SC_MENU, SC_OPTIONS, SC_RULES, SC_PRIVACY, SC_BUILDER, SC_REVEAL, SC_MAP, SC_DEPLOY, SC_BATTLE, SC_VICTORY } scene_t;
+typedef enum { SC_SPLASH, SC_MENU, SC_OPTIONS, SC_RULES, SC_PRIVACY, SC_BUILDER, SC_REVEAL, SC_MAP, SC_DEPLOY, SC_BATTLE, SC_VICTORY, SC_LEVEL } scene_t;
 typedef enum { M_SELECT, M_POWER, M_PTARGET, M_PFALLEN, M_PCELL, M_PAUSE, M_ACTION, M_TARGET, M_INSPECT, M_DICE, M_BUSY } ui_mode_t;
 typedef enum { AN_MOVE, AN_POP, AN_LUNGE, AN_HURT, AN_FLOAT, AN_DEATH, AN_HAPTIC, AN_BURST, AN_BOLT } anim_type_t;
 typedef struct { bool on, deferred, done; anim_type_t type; int id, delay; uint32_t t0, dur; int x, y, fx, fy, cid, p; char text[28]; uint16_t color; } anim_t;
@@ -140,9 +141,17 @@ static struct {
     uint32_t reveal_burst, vic_burst;
     struct { bool on; uint32_t t0; int cid, p, tcid, tp; bool has_t; int kind, x, y, target; action_id_t act; } cut; /* corte de especial */
     uint32_t cam_t;
+    /* contra Biddy: el jugador 1 lo maneja brain.c */
+    bool vs; level_t lvl; int doctrine, lvl_idx; bool recorded;
+    struct { int state; uint32_t at, t0; brain_decision_t d; int steps, active; int clicks, want; } ai;
 } U;
+enum { AI_IDLE, AI_THINK, AI_SHOW_ACTION, AI_SHOW_TARGET };
+#define BIDDY 1
 
 static uint32_t NOW;
+static const char *tname(int p) { return U.vs && p == BIDDY ? T->biddy : T->team[p]; }
+static const char *tword(int p) { return U.vs && p == BIDDY ? T->biddy_word : T->team_word[p]; }
+static bool ai_turn(void) { return U.vs && U.scene == SC_BATTLE && U.g.phase == PH_BATTLE && U.g.current == BIDDY; }
 static void go(scene_t s) { U.scene = s; U.t0 = NOW; }
 static void flash_msg(const char *m) { snprintf(U.msg, sizeof U.msg, "%s", m); U.msg_t = NOW; }
 static void haptic(haptic_t k) { if (U.haptic_on) hal_haptic(k); }
@@ -261,6 +270,7 @@ static void pump(void) {
     while (U.last_seq < g->seq) {
         const event_t *e = game_event(g, ++U.last_seq);
         if (!e) continue;
+        if (U.vs) brain_observe(g, e, BIDDY, U.lvl);   /* momentos para la futura personalidad */
         char b[64];
         switch (e->type) {
         case EV_MOVE: {
@@ -316,6 +326,7 @@ static void start_battle(int map) {
     game_new(&U.g, map, &U.armies[0], &U.armies[1]); U.has_game = true; layout_board(U.g.w, U.g.h);
     U.last_seq = 0; memset(U.anims, 0, sizeof U.anims); memset(U.parts, 0, sizeof U.parts);
     U.dmg[0] = U.dmg[1] = U.kills[0] = U.kills[1] = U.rolls = U.crits[0] = U.crits[1] = 0;
+    U.ai.state = AI_IDLE; U.ai.at = 0; U.recorded = false; brain_cancel();
     pump(); U.deploy_idx = 0; go(SC_DEPLOY);
 }
 static void after_deploy(void) {
@@ -324,14 +335,18 @@ static void after_deploy(void) {
     else { target_t c[MAX_TARGETS]; int n = deploy_cells(&U.g, c); if (U.deploy_idx >= n) U.deploy_idx = n - 1; if (U.deploy_idx < 0) U.deploy_idx = 0; }
 }
 static int sel_list(int *ids) { return selectable_units(&U.g, ids); }
-static void to_victory(void) { if (U.scene != SC_VICTORY) { haptic(HAP_WIN); go(SC_VICTORY); } }
+static void to_victory(void) {
+    if (U.scene == SC_VICTORY) return;
+    if (U.vs && !U.recorded) { U.recorded = true; brain_record_result(U.lvl, U.g.winner == 1 - BIDDY); }
+    haptic(HAP_WIN); go(SC_VICTORY);
+}
 static void enter_select(void) {
     game_t *g = &U.g;
     if (g->phase == PH_OVER) { to_victory(); return; }
     U.mode = M_SELECT;
     if (g->current != U.last_current || g->round != U.last_round) {
         U.banner.on = true; U.banner.lng = false; U.banner.team = g->current; U.banner.t0 = NOW;
-        snprintf(U.banner.text, sizeof U.banner.text, T->turn, T->team[g->current]);
+        snprintf(U.banner.text, sizeof U.banner.text, T->turn, tname(g->current));
         if (g->round != U.last_round) snprintf(U.banner.sub, sizeof U.banner.sub, T->round_of, g->round, RULES.max_rounds); else U.banner.sub[0] = 0;
         U.busy_until = NOW + 500;
         U.last_current = g->current; U.last_round = g->round; U.sel_idx = 0;
@@ -451,6 +466,21 @@ static void continue_dice(void) {
 }
 
 /* ---------- Entrada ---------- */
+static void start_cut(const unit_t *u, const unit_t *t, int kind, int x, int y, int target);
+/* Ejecuta el objetivo elegido (lo usan el jugador y Biddy). false si el motor no lo acepta. */
+static bool confirm_target(void) {
+    game_t *g = &U.g; target_t t = U.targets[U.tgt_idx]; unit_t *u = active_unit(g);
+    if (!u) return false;
+    if (U.action_id == A_MOVE || U.action_id == A_RETREAT) {
+        /* dejamos ver el paso antes de volver al menú */
+        do_move(g, t.x, t.y, U.action_id == A_RETREAT); haptic(HAP_THUD); pump(); U.mode = M_BUSY; U.after_action_at = NOW + 560; return true;
+    }
+    if (U.action_id == A_ABILITY) { start_cut(u, t.unit_id >= 0 ? unit_by_id_c(g, t.unit_id) : NULL, special_is_attack(u->cid) ? 2 : 1, t.x, t.y, t.unit_id); return true; }
+    if (!begin_attack(g, U.action_id, t.unit_id, &U.pending)) return false;
+    pump(); start_dice(0);
+    return true;
+}
+
 /* ---------- Corte de especial: retrato grande en diagonal antes de que ocurra ---------- */
 #define CUT_MS 1400
 static void start_cut(const unit_t *u, const unit_t *t, int kind, int x, int y, int target) {
@@ -466,6 +496,108 @@ static void finish_cut(void) {
     if (!begin_attack(g, A_ABILITY, U.cut.target, &U.pending)) { after_action(); return; }
     pump(); start_dice(0);
 }
+/* ---------- Biddy juega ----------
+ * Biddy usa la misma interfaz que un jugador: elige criatura, se ve qué acción toma y a quién
+ * apunta, y lanza los dados con la perilla "virtual". Piensa en segundo plano (brain_request). */
+static action_id_t step_action(ai_step_type_t t) {
+    switch (t) {
+    case AS_MOVE: return A_MOVE; case AS_RETREAT: return A_RETREAT; case AS_ATTACK: return A_ATTACK;
+    case AS_ABILITY: return A_ABILITY; case AS_DEFEND: return A_DEFEND; default: return A_END;
+    }
+}
+static int AI_FALLBACKS;
+static void ai_fallback(void) {
+    /* nunca se queda atorado: si algo no cuadra, termina la activación */
+    game_t *g = &U.g; U.ai.state = AI_IDLE; AI_FALLBACKS++;
+    if (g->active_id >= 0) end_activation(g);
+    else { int ids[MAX_UNITS]; int n = sel_list(ids); if (n && activate(g, ids[0])) end_activation(g); }
+    after_action();
+}
+static void ai_execute(void) {
+    game_t *g = &U.g; brain_decision_t *d = &U.ai.d;
+    U.ai.state = AI_IDLE;
+    switch (d->kind) {
+    case BD_POWER: {
+        const char *r = "";
+        if (g->active_id >= 0) break;
+        if (use_power(g, d->power.power, d->power.unit_id, d->power.x, d->power.y, &r)) power_done(true, r); else ai_fallback();
+        break; }
+    case BD_ACTIVATE: {
+        if (g->active_id >= 0) break;   /* ya hay una activa: vuelve a pensar */
+        int ids[MAX_UNITS]; int n = sel_list(ids);
+        for (int i = 0; i < n; i++) if (ids[i] == d->unit_id) U.sel_idx = i;
+        if (!activate(g, d->unit_id)) { ai_fallback(); break; }
+        pump(); U.act_idx = 0; U.ai.steps = 0; enter_action(); U.busy_until = NOW + 300;
+        break; }
+    case BD_STEP: {
+        if (g->active_id < 0 || d->unit_id != g->active_id) break;
+        if (++U.ai.steps > 8) { end_activation(g); after_action(); break; }
+        enter_action();
+        action_id_t a = step_action(d->step.type);
+        for (int i = 0; i < U.nact; i++) if (U.actions[i].id == a) U.act_idx = i;
+        U.ai.state = AI_SHOW_ACTION; U.ai.at = NOW + 450;
+        break; }
+    default: ai_fallback(); break;
+    }
+}
+static void ai_show_target(void) {
+    game_t *g = &U.g; ai_step_t st = U.ai.d.step; unit_t *u = active_unit(g);
+    U.ai.state = AI_IDLE;
+    if (!u) { after_action(); return; }
+    switch (st.type) {
+    case AS_END: end_activation(g); after_action(); return;
+    case AS_DEFEND: if (!do_defend(g)) end_activation(g); after_action(); return;
+    case AS_ABILITY: if (special_is_instant(u->cid)) { U.action_id = A_ABILITY; start_cut(u, NULL, 0, 0, 0, -1); return; } break;
+    default: break;
+    }
+    action_id_t a = step_action(st.type);
+    U.action_id = a; U.ntargets = targets_for(g, a, U.targets); sort_around(u->x, u->y, U.targets, U.ntargets);
+    int k = -1;
+    for (int i = 0; i < U.ntargets && k < 0; i++)
+        if (st.target >= 0 ? U.targets[i].unit_id == st.target : (U.targets[i].x == st.x && U.targets[i].y == st.y)) k = i;
+    if (k < 0) { ai_fallback(); return; }
+    U.tgt_idx = k; U.mode = M_TARGET; U.ai.state = AI_SHOW_TARGET; U.ai.at = NOW + 550;
+}
+static void ai_dice(void) {
+    if (U.dice.phase == 0 && NOW - U.dice.t0 > 450) {
+        /* carga el dado con unos cuantos "clics" y lo suelta: solo cambia la animación */
+        if (!U.ai.want) { U.ai.want = 4 + rand() % 7; U.ai.clicks = 0; U.ai.at = NOW; }
+        if (NOW >= U.ai.at) {
+            if (U.ai.clicks < U.ai.want) { dice_click(rand() % 3 ? 1 : -1); U.ai.clicks++; U.ai.at = NOW + 80; }
+            else { U.ai.want = 0; release_dice(); }
+        }
+    } else if (U.dice.phase == 2 && NOW - U.dice.result_t > 1500) continue_dice();
+}
+static void ai_drive(void) {
+    game_t *g = &U.g;
+    if (U.scene == SC_DEPLOY && U.vs && g->phase == PH_DEPLOY) {
+        if (g->deploy_q[g->dq_head].player == BIDDY && NOW >= U.ai.at) {
+            target_t c[MAX_TARGETS]; int n = deploy_cells(g, c);
+            if (n) { int i = brain_deploy_index(g, U.lvl); U.deploy_idx = i; place_next(g, c[i].x, c[i].y); }
+            else auto_place_rest(g);
+            after_deploy(); U.ai.at = NOW + 380;
+        }
+        return;
+    }
+    if (!ai_turn() || U.cut.on || U.after_action_at || U.victory_at || NOW < U.busy_until) return;
+    if (U.mode == M_DICE) { ai_dice(); return; }
+    if (U.mode != M_SELECT && U.mode != M_ACTION && U.mode != M_TARGET) return;
+    switch (U.ai.state) {
+    case AI_IDLE:
+        if (U.mode == M_TARGET) { U.mode = g->active_id >= 0 ? M_ACTION : M_SELECT; }
+        if (brain_request(g, U.lvl)) { U.ai.state = AI_THINK; U.ai.t0 = NOW; }
+        break;
+    case AI_THINK: {
+        if (brain_busy()) break;
+        uint32_t min = g->active_id < 0 ? 650 : 250;   /* que se alcance a ver qué hace */
+        if (NOW - U.ai.t0 < min) break;
+        if (brain_poll(&U.ai.d)) ai_execute(); else U.ai.state = AI_IDLE;
+        break; }
+    case AI_SHOW_ACTION: if (NOW >= U.ai.at) ai_show_target(); break;
+    case AI_SHOW_TARGET: if (NOW >= U.ai.at) { U.ai.state = AI_IDLE; if (!confirm_target()) ai_fallback(); } break;
+    }
+}
+
 static void in_battle(input_t ev);
 void ui_input(input_t ev) {
     if (ev == IN_L || ev == IN_R) haptic(HAP_TICK);
@@ -474,15 +606,25 @@ void ui_input(input_t ev) {
     switch (U.scene) {
     case SC_SPLASH: if (ev == IN_TAP) { haptic(HAP_OK); go(SC_MENU); } break;
     case SC_MENU:
-        if (ev == IN_L || ev == IN_R) U.menu_idx = stepi(U.menu_idx, 4, ev);
+        if (ev == IN_L || ev == IN_R) U.menu_idx = stepi(U.menu_idx, 5, ev);
         if (ev == IN_TAP) {
             haptic(HAP_OK);
-            if (U.menu_idx == 0) { memset(U.armies, 0, sizeof U.armies); U.b_player = 0; U.b_idx = 0; U.priv_key = 0; U.priv_color = 0; go(SC_PRIVACY); }
-            else if (U.menu_idx == 1) { U.rules_page = 0; go(SC_RULES); }
-            else if (U.menu_idx == 2) { U.opt_idx = 0; go(SC_OPTIONS); }
+            if (U.menu_idx == 0) { U.lvl_idx = brain_level(); go(SC_LEVEL); }
+            else if (U.menu_idx == 1) { U.vs = false; memset(U.armies, 0, sizeof U.armies); U.b_player = 0; U.b_idx = 0; U.priv_key = 0; U.priv_color = 0; go(SC_PRIVACY); }
+            else if (U.menu_idx == 2) { U.rules_page = 0; go(SC_RULES); }
+            else if (U.menu_idx == 3) { U.opt_idx = 0; go(SC_OPTIONS); }
             else hal_exit();
         }
         if (ev == IN_LONG) go(SC_SPLASH);
+        break;
+    case SC_LEVEL:
+        if (ev == IN_L || ev == IN_R) U.lvl_idx = stepi(U.lvl_idx, LVL_COUNT, ev);
+        if (ev == IN_TAP) {
+            haptic(HAP_OK);
+            U.vs = true; U.lvl = (level_t)U.lvl_idx; brain_set_level(U.lvl);
+            memset(U.armies, 0, sizeof U.armies); U.b_player = 0; U.b_idx = 0; go(SC_BUILDER);
+        }
+        if (ev == IN_LONG) go(SC_MENU);
         break;
     case SC_OPTIONS:
         if (ev == IN_L || ev == IN_R) U.opt_idx = stepi(U.opt_idx, 3, ev);
@@ -514,6 +656,7 @@ void ui_input(input_t ev) {
             if (U.b_idx == C_COUNT) {
                 if (!army->n) { haptic(HAP_NO); flash_msg(T->need_one); break; }
                 haptic(HAP_OK);
+                if (U.vs) { U.doctrine = brain_pick_army(U.lvl, &U.armies[BIDDY]); go(SC_REVEAL); break; }  /* Biddy arma el suyo */
                 U.priv_key = U.b_player == 0 ? 1 : 2; U.priv_color = U.b_player == 0 ? 1 : -1; go(SC_PRIVACY);
                 break;
             }
@@ -523,7 +666,7 @@ void ui_input(input_t ev) {
         }
         if (ev == IN_LONG) {
             if (army->n) { army->n--; haptic(HAP_NO); flash_msg(FMT(b, T->removed, cname(army->cid[army->n]))); }
-            else if (U.b_player == 0) go(SC_MENU);
+            else if (U.b_player == 0) go(U.vs ? SC_LEVEL : SC_MENU);
         }
         break; }
     case SC_REVEAL: if (ev == IN_TAP && NOW - U.t0 > 1400) { haptic(HAP_OK); U.map_idx = 0; go(SC_MAP); } break;
@@ -533,6 +676,18 @@ void ui_input(input_t ev) {
         break;
     case SC_DEPLOY: {
         target_t c[MAX_TARGETS]; int n = deploy_cells(&U.g, c);
+        bool biddy_places = U.vs && U.g.phase == PH_DEPLOY && U.g.deploy_q[U.g.dq_head].player == BIDDY;
+        if (ev == IN_LONG && U.vs) {
+            /* contra Biddy: tus criaturas van a buenas casillas y Biddy coloca las suyas como siempre */
+            while (U.g.phase == PH_DEPLOY) {
+                int nn = deploy_cells(&U.g, c); if (!nn) { auto_place_rest(&U.g); break; }
+                bool mine = U.g.deploy_q[U.g.dq_head].player != BIDDY;
+                int i = brain_deploy_index(&U.g, mine ? LVL_HARD : U.lvl);
+                place_next(&U.g, c[i].x, c[i].y);
+            }
+            haptic(HAP_OK); after_deploy(); break;
+        }
+        if (biddy_places) break;
         if (ev == IN_L || ev == IN_R) U.deploy_idx = stepi(U.deploy_idx, n, ev);
         if (ev == IN_TAP && n) { place_next(&U.g, c[U.deploy_idx].x, c[U.deploy_idx].y); haptic(HAP_THUD); after_deploy(); }
         if (ev == IN_LONG) { auto_place_rest(&U.g); haptic(HAP_OK); after_deploy(); }
@@ -541,8 +696,15 @@ void ui_input(input_t ev) {
     case SC_VICTORY: if (ev == IN_TAP && NOW - U.t0 > 1500) { haptic(HAP_OK); U.has_game = false; go(SC_MENU); } break;
     }
 }
+static bool confirm_target(void);
 static void in_battle(input_t ev) {
     game_t *g = &U.g; const char *reason = "";
+    if (ai_turn() && U.mode != M_PAUSE) {
+        /* turno de Biddy: solo se puede adelantar el resultado de los dados o pausar */
+        if (U.mode == M_DICE && U.dice.phase == 2 && ev == IN_TAP && NOW - U.dice.result_t > 450) { continue_dice(); return; }
+        if (ev == IN_LONG && (U.mode == M_SELECT || U.mode == M_ACTION) && (U.ai.state == AI_IDLE || U.ai.state == AI_THINK)) { U.mode = M_PAUSE; U.pause_idx = 0; }
+        return;
+    }
     switch (U.mode) {
     case M_SELECT: {
         int ids[MAX_UNITS]; int n = sel_list(ids);
@@ -592,8 +754,8 @@ static void in_battle(input_t ev) {
         break;
     case M_PAUSE:
         if (ev == IN_L || ev == IN_R) U.pause_idx = stepi(U.pause_idx, 2, ev);
-        if (ev == IN_TAP) { if (U.pause_idx == 0) U.mode = M_SELECT; else { U.has_game = false; go(SC_MENU); } }
-        if (ev == IN_LONG) U.mode = M_SELECT;
+        if (ev == IN_TAP) { if (U.pause_idx == 0) { if (g->active_id >= 0) enter_action(); else U.mode = M_SELECT; } else { brain_cancel(); U.ai.state = AI_IDLE; U.has_game = false; go(SC_MENU); } }
+        if (ev == IN_LONG) { if (g->active_id >= 0) enter_action(); else U.mode = M_SELECT; }
         break;
     case M_ACTION:
         if (ev == IN_L || ev == IN_R) U.act_idx = stepi(U.act_idx, U.nact, ev);
@@ -615,14 +777,7 @@ static void in_battle(input_t ev) {
         if (ev == IN_L || ev == IN_R) U.tgt_idx = stepi(U.tgt_idx, U.ntargets, ev);
         if (ev == IN_LONG) { U.mode = M_ACTION; break; }
         if (ev != IN_TAP) break;
-        target_t t = U.targets[U.tgt_idx]; unit_t *u = active_unit(g);
-        if (U.action_id == A_MOVE || U.action_id == A_RETREAT) {
-            /* dejamos ver el paso antes de volver al menú */
-            do_move(g, t.x, t.y, U.action_id == A_RETREAT); haptic(HAP_THUD); pump(); U.mode = M_BUSY; U.after_action_at = NOW + 560; break;
-        }
-        if (U.action_id == A_ABILITY) { start_cut(u, t.unit_id >= 0 ? unit_by_id_c(g, t.unit_id) : NULL, special_is_attack(u->cid) ? 2 : 1, t.x, t.y, t.unit_id); break; }
-        if (!begin_attack(g, U.action_id, t.unit_id, &U.pending)) { haptic(HAP_NO); break; }
-        pump(); start_dice(0);
+        if (!confirm_target()) haptic(HAP_NO);
         break; }
     case M_INSPECT: if (ev == IN_TAP || ev == IN_LONG) U.mode = g->active_id < 0 ? M_SELECT : M_ACTION; break;
     case M_DICE:
@@ -853,9 +1008,23 @@ static void sc_splash(void) {
 }
 static void sc_menu(void) {
     txt(T->clay, CX, 72, F_T2, C_CLAY);
-    list_menu(T->menu, 4, U.menu_idx, 118, 36);
-    sprite(C_BEAST, 0, 96, 252, 3, SM_NORMAL, 255); sprite(C_GOLEM, 1, 228, 252, 3, SM_NORMAL, 255);
+    list_menu(T->menu, 5, U.menu_idx, 106, 31);
+    sprite(C_BEAST, 0, 96, 256, 3, SM_NORMAL, 255); sprite(C_GOLEM, 1, 228, 256, 3, SM_NORMAL, 255);
     txt(T->menu_hint, CX, 300, F_S, C_DIM);
+}
+static void sc_level(void) {
+    static const uint16_t COL[LVL_COUNT] = {C_GOOD, C_GOLD, C_BAD};
+    static const int SHOW[LVL_COUNT] = {C_LARVA, C_SOLDIER, C_COLOSSUS};
+    char b[64]; int i = U.lvl_idx;
+    txt(T->lvl_title, CX, 50, F_T2, C_ORANGEL);
+    list_menu(T->lvl_names, LVL_COUNT, i, 96, 34);
+    gfx_fill(70, 96 + i * 34 - 16, 3, 32, COL[i]);
+    sprite(SHOW[i], 1, 298, 80 + i * 34 + sinf(NOW / 300.0f) * 2, 2, SM_NORMAL, 255);
+    gfx_wrap(T->lvl_desc[i], CX, 200, 250, 16, F_S, C_INK);
+    const brain_memory_t *m = brain_memory(); int pl = m->played[i], w = m->human_won[i];
+    txt(pl ? FMT(b, T->lvl_record, w, pl) : T->lvl_new, CX, 266, F_XS, COL[i]);
+    dots(LVL_COUNT, i, 288, COL[i]);
+    txt(T->lvl_hint, CX, 312, F_XS, C_DIM);
 }
 static void sc_options(void) {
     char a[48], b[48];
@@ -890,7 +1059,7 @@ static void sc_privacy(void) {
 static void sc_builder(void) {
     int pl = U.b_player; army_t *army = &U.armies[pl]; char b[96];
     int spent = army_cost(army), left = RULES.mana_budget - spent;
-    txt(FMT(b, T->army, T->team[pl]), CX, 34, F_T1, TEAM[pl].l);
+    txt(FMT(b, T->army, tname(pl)), CX, 34, F_T1, TEAM[pl].l);
     for (int i = 0; i < 20; i++) { int x = 98 + (int)(i * 8.4f); gfx_fill(x - 1, 48, 7, 9, C_OUT); gfx_fill(x, 49, 5, 7, i < spent ? RGB(0x4a, 0x3a, 0x63) : C_MANA); }
     txt(FMT(b, T->mana_left, left), CX, 68, F_S, C_MANA);
     if (U.b_idx == C_COUNT) {
@@ -934,7 +1103,8 @@ static void sc_reveal(void) {
     txt("VS", CX, CY, F_T3, C_GOLD);
     for (int k = 0; k < 2; k++) {
         int pl = 1 - k; army_t *army = &U.armies[pl]; int y = pl == 1 ? 96 : 236, n = army->n;
-        txt(FMT(b, T->reveal_mana, T->team[pl], army_cost(army)), CX, pl == 1 ? 60 : 300, F_T1, TEAM[pl].l);
+        txt(FMT(b, T->reveal_mana, tname(pl), army_cost(army)), CX, pl == 1 ? 60 : 300, F_T1, TEAM[pl].l);
+        if (U.vs && pl == BIDDY) { char d2[64]; txt(FMT(d2, T->ai_doctrine, L(DOCTRINES[U.doctrine].name), T->lvl_names[U.lvl]), CX, 78, F_XS, C_DIM); }
         for (int i = 0; i < n; i++) {
             int x = CX - n * 40 / 2 + i * 40 + 4; float d = fmaxf(0, fminf(1, p * 1.6f - i * 0.12f));
             sprite(army->cid[i], pl, x, y + (1 - d) * (pl == 1 ? -30 : 30), 2.66f, d < 0.5f ? SM_SIL : SM_NORMAL, (uint8_t)(255 * d));
@@ -982,7 +1152,7 @@ static void sc_deploy(void) {
     draw_board(&o);
     panel(96, 30, 168, 40, TEAM[pl].b); panel(46, 290, 268, 62, C_GOLD);
     txt(T->deploy, CX, 40, F_S, C_DIM);
-    txt(FMT(b, T->places, T->team[pl], cname(cid)), CX, 60, F_T1, TEAM[pl].l);
+    txt(FMT(b, T->places, tname(pl), cname(cid)), CX, 60, F_T1, TEAM[pl].l);
     txt(FMT(b, T->remaining, g->dq_len - g->dq_head), CX, 302, F_S, C_INK);
     txt(T->deploy_hint1, CX, 320, F_XS, C_DIM);
     txt(T->deploy_hint2, CX, 335, F_XS, C_DIM);
@@ -1000,7 +1170,7 @@ static void hud_top(void) {
     txt(FMT(b, "R%d/%d", g->round, RULES.max_rounds), CX, 42, F_S, C_GOLD);
     flag(98, 42, C_BLUE); txtl(FMT(b, "%d", g->vp[0]), 106, 42, F_T1, C_INK); gem(126, 42, C_MANA); txtl(FMT(b, "%d", g->mana[0]), 132, 42, F_T1, C_MANA);
     flag(222, 42, C_ORANGE); txtl(FMT(b, "%d", g->vp[1]), 230, 42, F_T1, C_INK); gem(250, 42, C_MANA); txtl(FMT(b, "%d", g->mana[1]), 256, 42, F_T1, C_MANA);
-    txt(FMT(b, T->turn, T->team[g->current]), CX, 61, F_T1, TEAM[g->current].l);
+    txt(FMT(b, T->turn, tname(g->current)), CX, 61, F_T1, TEAM[g->current].l);
 }
 static void unit_line(const unit_t *u, int y) {
     const creature_t *c = &CREATURES[u->cid]; char b[8];
@@ -1055,7 +1225,12 @@ static void sc_battle(void) {
     hud_top();
     if (U.mode != M_DICE && !U.cut.on) panel(46, 288, 268, 66, C_GOLD);
     bool msg_on = NOW - U.msg_t < 1500;
-    if (U.mode == M_SELECT || U.mode == M_PAUSE) {
+    if ((U.mode == M_SELECT || U.mode == M_PAUSE) && ai_turn()) {
+        char d3[8]; int k = (NOW / 300) % 4; for (int j = 0; j < 3; j++) d3[j] = j < k ? '.' : ' '; d3[3] = 0;
+        txt(FMT(b, "%s%s", T->ai_thinking, d3), CX, 306, F_T1, C_ORANGEL);
+        txt(FMT(b, T->vs_level, T->lvl_names[U.lvl]), CX, 326, F_XS, C_DIM);
+        txt(T->hold_pause, CX, 344, F_XS, C_DIM);
+    } else if (U.mode == M_SELECT || U.mode == M_PAUSE) {
         if (U.sel_idx >= nsel) {
             bool used = g->round < g->power_ready[g->current]; char cb[48];
             int w = gfx_text_w(T->summoner, F_T1);
@@ -1083,6 +1258,7 @@ static void sc_battle(void) {
         txt("<", 84, 319, F_T1, C_DIM); txt(">", 276, 319, F_T1, C_DIM);
         txt(b, CX, 319, F_T1, a->enabled ? C_INK : C_DIM);
         const char *hint = a->enabled ? (u && u->ap == u->ap_start ? T->tap_choose_other : T->tap_choose) : (a->reason ? a->reason : "");
+        if (ai_turn()) hint = T->ai_playing;
         txt(msg_on ? U.msg : hint, CX, 336, F_XS, msg_on || !a->enabled ? C_ORANGEL : C_DIM);
     } else if (U.mode == M_TARGET) {
         target_t *t = &U.targets[U.tgt_idx];
@@ -1112,7 +1288,7 @@ static void sc_battle(void) {
             char b2[32];
             txt(tr->hazard ? T->burns : g->orbs[t->y][t->x] ? T->pick_mana : FMT(b2, T->n_of_m, U.tgt_idx + 1, U.ntargets), CX, 318, F_S, tr->hazard ? C_BAD : C_MANA);
         }
-        txt(T->tap_confirm, CX, 336, F_XS, C_DIM);
+        txt(ai_turn() ? T->ai_playing : T->tap_confirm, CX, 336, F_XS, C_DIM);
     target_done:;
     } else if (U.mode == M_PTARGET) {
         unit_line(unit_by_id_c(g, U.targets[U.tgt_idx].unit_id), 300);
@@ -1516,15 +1692,15 @@ static void draw_dice(void) {
 static void sc_victory(void) {
     game_t *g = &U.g; int w = g->winner; char b[64];
     float p = fminf(1, (NOW - U.t0) / 600.0f);
-    txt(w < 0 ? T->draw : FMT(b, T->wins, T->team[w]), CX, 58, F_T2, w >= 0 ? TEAM[w].l : C_INK);
-    if (g->win_reason == WIN_ELIMINATION) FMT(b, T->r_elim, T->team_word[1 - w]);
+    txt(w < 0 ? T->draw : U.vs && w != BIDDY ? T->you_win : FMT(b, T->wins, tname(w)), CX, 58, F_T2, w >= 0 ? TEAM[w].l : C_INK);
+    if (g->win_reason == WIN_ELIMINATION) FMT(b, T->r_elim, tword(1 - w));
     else if (g->win_reason == WIN_POINTS) FMT(b, T->r_points, g->vp[0], g->vp[1]);
     else FMT(b, "%s", g->win_reason == WIN_COST ? T->r_cost : T->r_draw);
     txt(b, CX, 82, F_S, C_DIM);
     int n = 0, sv[MAX_UNITS];
     for (int i = 0; i < g->nunits && n < 6; i++) if (g->units[i].alive && (w < 0 || g->units[i].player == w)) sv[n++] = i;
     for (int i = 0; i < n; i++) sprite(g->units[sv[i]].cid, g->units[sv[i]].player, CX - n * 34 / 2 + i * 34 + 5, 98 - fabsf(sinf(NOW / 200.0f + i)) * 8 * p, 2, SM_NORMAL, 255);
-    txt(T->team[0], 132, 146, F_T1, C_BLUEL); txt(T->team[1], 232, 146, F_T1, C_ORANGEL);
+    txt(tname(0), 132, 146, F_T1, C_BLUEL); txt(tname(1), 232, 146, F_T1, C_ORANGEL);
     int *vals[4] = {U.dmg, U.kills, g->vp, U.crits};
     for (int i = 0; i < 4; i++) {
         int y = 168 + i * 22;
@@ -1532,13 +1708,14 @@ static void sc_victory(void) {
         txt(FMT(b, "%d", vals[i][0]), 132, y, F_T1, C_INK); txt(FMT(b, "%d", vals[i][1]), 232, y, F_T1, C_INK);
     }
     txt(FMT(b, T->rounds_rolls, g->round, U.rolls), CX, 266, F_S, C_INK);
+    if (U.vs) { char b2[48]; txt(FMT(b2, T->vs_level, T->lvl_names[U.lvl]), CX, 282, F_XS, C_DIM); }
     if (U.vic_burst != U.t0) { U.vic_burst = U.t0; uint16_t c[3] = {w >= 0 ? TEAM[w].b : C_INK, w >= 0 ? TEAM[w].l : C_INK, C_GOLD}; burst(CX, 70, 50, c, 3, 4); }
     if (NOW - U.t0 > 1500 && blink(550)) txt(T->tap_menu, CX, 300, F_S, C_GOLD);
 }
 
 /* ---------- Bucle ---------- */
 void ui_init(lang_t lang, bool haptic_on, int tests_pass, int tests_total) {
-    memset(&U, 0, sizeof U); build_palettes();
+    memset(&U, 0, sizeof U); build_palettes(); brain_init();
     set_lang(lang); U.haptic_on = haptic_on; U.tests_pass = tests_pass; U.tests_total = tests_total;
     NOW = hal_ms(); go(SC_SPLASH);
 }
@@ -1547,6 +1724,7 @@ void ui_frame(void) {
     if (U.cut.on && NOW >= U.cut.t0 + CUT_MS) finish_cut();
     if (U.after_action_at && NOW >= U.after_action_at) { U.after_action_at = 0; after_action(); }
     if (U.victory_at && NOW >= U.victory_at) { U.victory_at = 0; to_victory(); }
+    ai_drive();
     for (int i = 0; i < MAX_ANIMS; i++) { anim_t *a = &U.anims[i]; if (a->on && !a->deferred && NOW > a->t0 + a->dur + 50) a->on = false; }
     gfx_background();
     switch (U.scene) {
@@ -1561,6 +1739,7 @@ void ui_frame(void) {
     case SC_DEPLOY: sc_deploy(); break;
     case SC_BATTLE: sc_battle(); break;
     case SC_VICTORY: sc_victory(); break;
+    case SC_LEVEL: sc_level(); break;
     }
     draw_particles();
     if (U.holding) {
@@ -1572,6 +1751,10 @@ void ui_frame(void) {
 #ifdef UI_DEBUG
 void ui_debug(int *scene, int *mode, int *dice_phase) { *scene = U.scene; *mode = U.mode; *dice_phase = U.dice.phase; }
 int ui_debug_menu(void) { return U.menu_idx; }
+int ui_debug_level(void) { return U.lvl_idx; }
+int ui_debug_ai_turn(void) { return ai_turn(); }
+int ui_debug_ai_fallbacks(void) { return AI_FALLBACKS; }
+int ui_debug_winner(void) { return U.g.winner; }
 int ui_debug_bidx(void) { return U.b_idx; }
 int ui_debug_mana(void) { return RULES.mana_budget - army_cost(&U.armies[U.b_player]); }
 void ui_debug_dice(int *stage, int *page) { *stage = U.dice.stage; *page = U.dice.page; }

@@ -1,8 +1,8 @@
 #include "texts.h"
 
 const texts_t TXT_ES = {
-    .project = "PROYECTO", .clay = "ARCILLA", .working = "título provisional", .tagline = "tácticas de plastilina · 2 jugadores", .tap_start = "TOCA PARA EMPEZAR",
-    .menu = {"Nueva partida", "Cómo se juega", "Opciones", "Salir"}, .menu_hint = "gira · toca",
+    .project = "PROYECTO", .clay = "ARCILLA", .working = "título provisional", .tagline = "tácticas de plastilina · 1 o 2 jugadores", .tap_start = "TOCA PARA EMPEZAR",
+    .menu = {"Contra Biddy", "Dos jugadores", "Cómo se juega", "Opciones", "Salir"}, .menu_hint = "gira · toca",
     .options = "OPCIONES", .lang = "Idioma", .lang_name = "Español", .haptic = "Vibración", .on = "sí", .off = "no", .back = "Volver", .opt_hint = "toca: cambiar · mantén: salir",
     .howto = "CÓMO SE JUEGA", .hold_exit = "mantén para salir",
     .team = {"AZUL", "NARANJA"}, .team_word = {"Azul", "Naranja"},
@@ -41,6 +41,14 @@ const texts_t TXT_ES = {
         {"Poderes", "Antes de activar puedes usar un poder del invocador: Endurecer %d, Impulso (+2 MOV) %d, Ímpetu (+1 PA) %d, Reinvocar: mitad del coste + %d. Uno por ronda y nunca el mismo dos veces seguidas. Ganas %d de maná por ronda."},
     },
     .tests_line = "Pruebas del motor: %d de %d",
+    .biddy = "BIDDY", .biddy_word = "Biddy", .lvl_title = "CONTRA BIDDY",
+    .lvl_names = {"Fácil", "Medio", "Difícil"},
+    .lvl_desc = {"Biddy aprende contigo: se equivoca seguido y arma ejércitos sencillos.",
+                 "Juega en serio, aunque a veces se distrae. Ejércitos bien armados.",
+                 "Calcula cada paso y trae sus mejores ejércitos. Sin piedad."},
+    .lvl_record = "Le has ganado %d de %d", .lvl_new = "Aún no han jugado en este nivel", .lvl_hint = "gira · toca: jugar · mantén: volver",
+    .ai_thinking = "BIDDY PIENSA", .ai_playing = "turno de Biddy", .ai_doctrine = "%s · nivel %s",
+    .you_win = "¡GANASTE!", .vs_level = "Contra Biddy · %s",
     .power_cooling = "ya usaste tu poder · vuelve en la ronda %d", .bd_hint = "gira: desglose · toca: seguir", .bd_hint_back = "gira: volver · toca: seguir",
     .bd_skill = "ASÍ SE CALCULA EL ACIERTO", .bd_dmg = "ASÍ SE CALCULA EL DAÑO", .bd_die = "Dado de habilidad", .bd_die_why = "lo que salió en el dado",
     .bd_total = "Total", .bd_total_why = "", .bd_scale = {"Fallo crítico", "Fallo", "Parcial", "Éxito", "Mejorado", "Crítico"}, .bd_num = {"1 nat.", "2 o -", "3", "4", "5 o +", "6 nat."},
@@ -54,8 +62,8 @@ const texts_t TXT_ES = {
 };
 
 const texts_t TXT_EN = {
-    .project = "PROJECT", .clay = "CLAY", .working = "working title", .tagline = "clay tactics · 2 players", .tap_start = "TAP TO START",
-    .menu = {"New game", "How to play", "Options", "Exit"}, .menu_hint = "turn · tap",
+    .project = "PROJECT", .clay = "CLAY", .working = "working title", .tagline = "clay tactics · 1 or 2 players", .tap_start = "TAP TO START",
+    .menu = {"Versus Biddy", "Two players", "How to play", "Options", "Exit"}, .menu_hint = "turn · tap",
     .options = "OPTIONS", .lang = "Language", .lang_name = "English", .haptic = "Vibration", .on = "on", .off = "off", .back = "Back", .opt_hint = "tap: change · hold: exit",
     .howto = "HOW TO PLAY", .hold_exit = "hold to exit",
     .team = {"BLUE", "ORANGE"}, .team_word = {"Blue", "Orange"},
@@ -94,6 +102,14 @@ const texts_t TXT_EN = {
         {"Powers", "Before activating you may use a summoner power: Harden %d, Dash (+2 MOV) %d, Momentum (+1 AP) %d, Resummon: half its cost + %d. One per round, never the same one twice in a row. You gain %d mana per round."},
     },
     .tests_line = "Engine tests: %d of %d",
+    .biddy = "BIDDY", .biddy_word = "Biddy", .lvl_title = "VERSUS BIDDY",
+    .lvl_names = {"Easy", "Medium", "Hard"},
+    .lvl_desc = {"Biddy learns with you: makes plenty of mistakes and simple armies.",
+                 "Plays for real, though it gets distracted. Well-built armies.",
+                 "Weighs every step and brings its best armies. No mercy."},
+    .lvl_record = "You've beaten it %d of %d", .lvl_new = "No games at this level yet", .lvl_hint = "turn · tap: play · hold: back",
+    .ai_thinking = "BIDDY IS THINKING", .ai_playing = "Biddy's turn", .ai_doctrine = "%s · %s level",
+    .you_win = "YOU WIN!", .vs_level = "Versus Biddy · %s",
     .power_cooling = "power used · back in round %d", .bd_hint = "turn: breakdown · tap: go on", .bd_hint_back = "turn: back · tap: go on",
     .bd_skill = "HOW THE HIT IS WORKED OUT", .bd_dmg = "HOW THE DAMAGE IS WORKED OUT", .bd_die = "Skill die", .bd_die_why = "what the die showed",
     .bd_total = "Total", .bd_total_why = "", .bd_scale = {"Critical fail", "Fail", "Partial", "Success", "Strong", "Critical"}, .bd_num = {"nat. 1", "2 or -", "3", "4", "5 or +", "nat. 6"},

@@ -10,6 +10,9 @@ uint32_t hal_ms(void) { return T_MS; }
 void hal_haptic(haptic_t k) { (void)k; }
 void hal_save_settings(lang_t l, bool h) { (void)l; (void)h; }
 void hal_exit(void) {}
+bool hal_load(const char *k, void *d, int n) { (void)k; (void)d; (void)n; return false; }
+void hal_store(const char *k, const void *d, int n) { (void)k; (void)d; (void)n; }
+void hal_think_async(void (*fn)(void)) { fn(); }
 uint8_t platform_random_byte(void) { return (uint8_t)(rand() & 0xFF); }
 static uint16_t FB[SCR * SCR], BG[SCR * SCR];
 static void save(const char *dir, const char *name) {

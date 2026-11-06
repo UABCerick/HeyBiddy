@@ -3,7 +3,7 @@
 
 typedef struct {
     const char *project, *clay, *working, *tagline, *tap_start;
-    const char *menu[4], *menu_hint;
+    const char *menu[5], *menu_hint;
     const char *options, *lang, *lang_name, *haptic, *on, *off, *back, *opt_hint;
     const char *howto, *hold_exit;
     const char *team[2], *team_word[2];
@@ -30,6 +30,9 @@ typedef struct {
     const char *tests_line;
     const char *power_cooling, *bd_hint, *bd_hint_back, *bd_skill, *bd_dmg, *bd_die, *bd_die_why, *bd_total, *bd_total_why, *bd_scale[6], *bd_num[6], *bd_eff[6];
     const char *odds_hit, *odds_dmg, *odds_kill, *max_charge, *map_size, *odds_chain, *chain_jumps, *chain_row, *passive_lbl, *hidden_lbl, *f_reveal, *f_wall, *tips[9];
+    /* contra Biddy */
+    const char *biddy, *biddy_word, *lvl_title, *lvl_names[3], *lvl_desc[3], *lvl_record, *lvl_new, *lvl_hint;
+    const char *ai_thinking, *ai_playing, *ai_doctrine, *you_win, *vs_level;
 } texts_t;
 
 extern const texts_t TXT_ES, TXT_EN;
