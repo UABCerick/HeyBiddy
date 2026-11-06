@@ -11,11 +11,13 @@
 
 extern const app_t app_clock;
 extern const app_t app_counter;
+extern const app_t app_arcilla;
 extern const app_t app_settings;
 
 const app_t *const g_apps[] = {
     &app_clock,
     &app_counter,
+    &app_arcilla,
     &app_settings,      /* Ajustes siempre al final */
 };
 

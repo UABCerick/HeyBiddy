@@ -58,7 +58,6 @@ bool sys_open_app(const char *id)
 void sys_haptic(uint8_t e) {}
 void sys_haptic_click(void) {}
 bool sys_run_on_ui(sys_ui_fn_t fn, void *arg) { fn(arg); return true; }
-void sys_raw_draw(int x, int y, int w, int h, const uint16_t *p) {}
 uint8_t sys_get_brightness(void) { return bright; }
 void sys_set_brightness(uint8_t p) { bright = p; }
 bool sys_get_haptic_enabled(void) { return haptic; }
@@ -76,6 +75,16 @@ static void flush(lv_disp_drv_t *d, const lv_area_t *a, lv_color_t *px)
         for (int x = a->x1; x <= a->x2; x++)
             fb[y * 360 + x] = *px++;
     lv_disp_flush_ready(d);
+}
+
+/* apps con APP_FLAG_RAW_DISPLAY: los píxeles llegan en RGB565 con los bytes invertidos */
+void sys_raw_draw(int x, int y, int w, int h, const uint16_t *p)
+{
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            uint16_t c = p[j * w + i];
+            fb[(y + j) * 360 + x + i].full = (uint16_t)((c >> 8) | (c << 8));
+        }
 }
 
 static void switch_now(void)
@@ -124,7 +133,7 @@ static void touch(touch_type_t t, int x, int y)
 
 static void shot(const char *name)
 {
-    lv_obj_invalidate(lv_scr_act());
+    if (!(active->flags & APP_FLAG_RAW_DISPLAY)) lv_obj_invalidate(lv_scr_act());
     run(50);
     char path[256];
     snprintf(path, sizeof(path), "%s.ppm", name);
@@ -187,5 +196,9 @@ int main(int argc, char **argv)
     touch(TOUCH_TAP, 180, 180);
     knob(+1); knob(+1); knob(+1); knob(+1); knob(+1); knob(+1);
     snprintf(p, sizeof p, "%s/09_ajustes_apps", dir); shot(p);
+    sys_open_app("arcilla"); run(1500);    /* app de pantalla propia */
+    snprintf(p, sizeof p, "%s/10_arcilla_menu", dir); shot(p);
+    touch(TOUCH_TAP, 180, 180); run(1500);
+    snprintf(p, sizeof p, "%s/11_arcilla_jugar", dir); shot(p);
     return 0;
 }
