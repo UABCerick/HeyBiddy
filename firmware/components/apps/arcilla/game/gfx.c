@@ -4,7 +4,8 @@
 #include <stdlib.h>
 #include <string.h>
 
-static uint16_t *FB, *BG;
+static uint16_t *FB, *BG, *SCREEN;
+static int TW = SCR, TH = SCR;   /* destino actual: la pantalla o un lienzo (caché del tablero) */
 static uint8_t GA = 255;
 
 static void build_background(void) {
@@ -17,28 +18,38 @@ static void build_background(void) {
         BG[y * SCR + x] = RGB(r, g, b);
     }
 }
-void gfx_init(uint16_t *framebuffer, uint16_t *background) { FB = framebuffer; BG = background; build_background(); }
+void gfx_init(uint16_t *framebuffer, uint16_t *background) { FB = SCREEN = framebuffer; BG = background; build_background(); }
+void gfx_target(uint16_t *buf, int w, int h) { FB = buf; TW = w; TH = h; }
+void gfx_target_screen(void) { FB = SCREEN; TW = SCR; TH = SCR; }
+int gfx_tw(void) { return TW; }
+int gfx_th(void) { return TH; }
+const uint16_t *gfx_bg(void) { return BG; }
 uint16_t *gfx_fb(void) { return FB; }
-void gfx_background(void) { memcpy(FB, BG, SCR * SCR * 2); }
+void gfx_background(void) { memcpy(SCREEN, BG, SCR * SCR * 2); }
 void gfx_global_alpha(uint8_t a) { GA = a; }
 
-static inline uint16_t blend(uint16_t d, uint16_t s, uint32_t a) {
-    uint32_t dr = d >> 11, dg = (d >> 5) & 63, db = d & 31, sr = s >> 11, sg = (s >> 5) & 63, sb = s & 31;
-    uint32_t r = (sr * a + dr * (255 - a)) / 255, g = (sg * a + dg * (255 - a)) / 255, b = (sb * a + db * (255 - a)) / 255;
-    return (uint16_t)((r << 11) | (g << 5) | b);
+/* Mezcla RGB565 con alfa de 5 bits: una multiplicación por píxel en vez de tres divisiones.
+ * Los canales se separan en una palabra de 32 bits (verde arriba) para operar los tres a la vez. */
+static inline uint32_t spread(uint16_t c) { return (c | ((uint32_t)c << 16)) & 0x07E0F81Fu; }
+static inline uint16_t blend32(uint16_t d, uint32_t fg, uint32_t a5) {
+    uint32_t bg = spread(d);
+    uint32_t r = ((((fg - bg) * a5) >> 5) + bg) & 0x07E0F81Fu;
+    return (uint16_t)(r | (r >> 16));
 }
+static inline uint16_t blend(uint16_t d, uint16_t s, uint32_t a) { return blend32(d, spread(s), (a + 4) >> 3); }
 void gfx_fill_a(int x, int y, int w, int h, uint16_t c, uint8_t alpha) {
     uint32_t a = (uint32_t)alpha * GA / 255;
     if (a == 0) return;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
-    if (x + w > SCR) w = SCR - x;
-    if (y + h > SCR) h = SCR - y;
+    if (x + w > TW) w = TW - x;
+    if (y + h > TH) h = TH - y;
     if (w <= 0 || h <= 0) return;
+    uint32_t fg = spread(c), a5 = (a + 4) >> 3;
     for (int j = 0; j < h; j++) {
-        uint16_t *p = FB + (y + j) * SCR + x;
-        if (a >= 255) for (int i = 0; i < w; i++) p[i] = c;
-        else for (int i = 0; i < w; i++) p[i] = blend(p[i], c, a);
+        uint16_t *p = FB + (y + j) * TW + x;
+        if (a >= 255 || a5 >= 32) for (int i = 0; i < w; i++) p[i] = c;
+        else if (a5) for (int i = 0; i < w; i++) p[i] = blend32(p[i], fg, a5);
     }
 }
 void gfx_fill(int x, int y, int w, int h, uint16_t c) { gfx_fill_a(x, y, w, h, c, 255); }
@@ -85,11 +96,20 @@ int gfx_text_w(const char *s, const font_t *f) {
     while (*s) { const glyph_t *g = glyph(f, next_cp(&s)); if (g) w += g->adv; }
     return w;
 }
-static void draw_glyph(const font_t *f, const glyph_t *g, int x, int base, uint16_t c, uint8_t a) {
-    int bpr = (g->w + 7) / 8;
+static void draw_glyph(const font_t *f, const glyph_t *g, int x, int base, uint16_t c, uint8_t alpha) {
+    /* escribe directo en el búfer: antes era una llamada a gfx_fill_a por píxel */
+    uint32_t a = (uint32_t)alpha * GA / 255; if (!a) return;
+    int bpr = (g->w + 7) / 8, x0 = x + g->xo, y0 = base + g->yo;
     const uint8_t *b = f->bits + g->off;
-    for (int j = 0; j < g->h; j++) for (int i = 0; i < g->w; i++)
-        if (b[j * bpr + (i >> 3)] & (0x80 >> (i & 7))) gfx_fill_a(x + g->xo + i, base + g->yo + j, 1, 1, c, a);
+    for (int j = 0; j < g->h; j++) {
+        int yy = y0 + j; if ((unsigned)yy >= (unsigned)TH) continue;
+        const uint8_t *row = b + j * bpr; uint16_t *dst = FB + yy * TW;
+        for (int i = 0; i < g->w; i++) {
+            if (!(row[i >> 3] & (0x80 >> (i & 7)))) continue;
+            int xx = x0 + i; if ((unsigned)xx >= (unsigned)TW) continue;
+            dst[xx] = a >= 255 ? c : blend(dst[xx], c, a);
+        }
+    }
 }
 static void text_raw(const char *s, int x, int base, const font_t *f, uint16_t c, uint8_t a) {
     while (*s) { const glyph_t *g = glyph(f, next_cp(&s)); if (!g) continue; draw_glyph(f, g, x, base, c, a); x += g->adv; }
@@ -125,9 +145,9 @@ int gfx_wrap_count(const char *s, int max_w, const font_t *f) { return wrap_impl
 
 /* ---------- Formas para efectos (dados, ondas, brillos) ---------- */
 void gfx_px(int x, int y, uint16_t c, uint8_t alpha) {
-    if ((unsigned)x >= SCR || (unsigned)y >= SCR) return;
+    if ((unsigned)x >= (unsigned)TW || (unsigned)y >= (unsigned)TH) return;
     uint32_t a = (uint32_t)alpha * GA / 255; if (!a) return;
-    uint16_t *p = FB + y * SCR + x; *p = a >= 255 ? c : blend(*p, c, a);
+    uint16_t *p = FB + y * TW + x; *p = a >= 255 ? c : blend(*p, c, a);
 }
 void gfx_disc(int cx, int cy, int r, uint16_t c, uint8_t alpha) {
     for (int dy = -r; dy <= r; dy++) { int w = (int)sqrtf((float)(r * r - dy * dy)); gfx_fill_a(cx - w, cy + dy, 2 * w + 1, 1, c, alpha); }
@@ -152,11 +172,11 @@ void gfx_art_sub(const uint8_t *px, int w, int h, int sx0, int sy0, int sw, int 
     for (int i = 0; i < dw; i++) { int s = (int)(i / sc); if (s >= sw) s = sw - 1; sxs[i] = (int16_t)(sx0 + (flip ? sw - 1 - s : s)); }
     uint32_t a = (uint32_t)alpha * GA / 255; if (!a) return;
     for (int j = 0; j < dh; j++) {
-        int yy = oy + j; if ((unsigned)yy >= SCR) continue;
+        int yy = oy + j; if ((unsigned)yy >= (unsigned)TH) continue;
         int sy = (int)(j / sc); if (sy >= sh) sy = sh - 1;
-        const uint8_t *row = px + (sy0 + sy) * w; uint16_t *dst = FB + yy * SCR;
+        const uint8_t *row = px + (sy0 + sy) * w; uint16_t *dst = FB + yy * TW;
         for (int i = 0; i < dw; i++) {
-            int xx = ox + i; if ((unsigned)xx >= SCR) continue;
+            int xx = ox + i; if ((unsigned)xx >= (unsigned)TW) continue;
             uint8_t k = row[sxs[i]]; if (!k) continue;
             uint16_t c = mode == 1 ? sil : (mode == 2 && k != 1) ? 0xFFFF : pal[k];
             dst[xx] = a >= 255 ? c : blend(dst[xx], c, a);

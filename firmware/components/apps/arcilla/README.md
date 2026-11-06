@@ -4,7 +4,7 @@ Juego táctico de criaturas de arcilla para dos jugadores o contra Biddy (Fácil
 Es una app de Hey Biddy: se abre desde el menú circular (icono de flechas cruzadas) y vuelve al
 menú con la opción **Salir** del menú del juego. La partida queda en memoria hasta apagar la placa.
 
-Versión de la app: `ARCILLA_VERSION` en `arcilla.c` (0.7.0).
+Versión de la app: `ARCILLA_VERSION` en `arcilla.c` (0.7.1).
 
 Cómo juega Biddy, cómo se miden los niveles y qué queda listo para la personalidad: [`IA.md`](IA.md).
 
@@ -26,7 +26,10 @@ Cómo juega Biddy, cómo se miden los niveles y qué queda listo para la persona
 - `game/`: motor (`engine.c`), IA (`ai.c`), cerebro de Biddy con niveles y ejércitos (`brain.c`), interfaz (`ui.c`), dibujo (`gfx.c`), textos ES/EN
   (`texts.c`), fuentes y arte generados (`font_data.c`, `art_data.c`, `hiart_data.c`).
   Es C portable: compila igual en la placa y en el PC.
-- Memoria: dos búferes de pantalla de 360×360 y una franja de 24 filas, todo en PSRAM.
+- Memoria: dos búferes de pantalla de 360×360 en PSRAM, una franja de 48 filas en RAM interna
+  y la caché del terreno (el tablero con su paisaje, ~1 MB en PSRAM; se rehace si cambia el mapa o
+  el dueño de un punto de control).
+- Rendimiento: cada 5 s el monitor imprime `cuadros/s · dibujo N ms · envío N ms`.
 - `host/`, `art/`, `licenses/`: herramientas de PC. `host/` no entra al firmware.
 
 ## Herramientas de PC (Linux o WSL, desde esta carpeta)

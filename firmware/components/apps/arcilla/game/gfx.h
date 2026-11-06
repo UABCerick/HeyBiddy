@@ -12,6 +12,12 @@ typedef enum { AL_LEFT, AL_CENTER, AL_RIGHT } align_t;
 void gfx_init(uint16_t *framebuffer, uint16_t *background);
 uint16_t *gfx_fb(void);
 void gfx_background(void);                    /* copia el fondo precalculado */
+/* Dibujar en un lienzo propio (por ejemplo, la caché del tablero) y volver a la pantalla */
+void gfx_target(uint16_t *buf, int w, int h);
+void gfx_target_screen(void);
+int gfx_tw(void);
+int gfx_th(void);
+const uint16_t *gfx_bg(void);                /* fondo precalculado, 360×360 */
 void gfx_fill(int x, int y, int w, int h, uint16_t c);
 void gfx_fill_a(int x, int y, int w, int h, uint16_t c, uint8_t alpha);
 void gfx_pixel_a(int x, int y, uint16_t c, uint8_t alpha);

@@ -248,6 +248,22 @@ static void cam_focus(int x, int y) {
     if (sy > B0) CAM_TY += sy - B0;
     cam_clamp(&CAM_TX, &CAM_TY);
 }
+/* Centra la cámara (con transición suave) en un punto del tablero, en píxeles del mundo. */
+static void cam_center_world(float wx, float wy, int fx, int fy) {
+    CAM_TX = wx; CAM_TY = wy; cam_clamp(&CAM_TX, &CAM_TY);
+    cam_manual = false; cam_fx = fx; cam_fy = fy;
+}
+/* Al empezar un turno: la cámara va al lado de quien juega (centro de sus criaturas). */
+static void cam_to_player(int p) {
+    float sx = 0, sy = 0; int n = 0;
+    for (int i = 0; i < U.g.nunits; i++) {
+        const unit_t *u = &U.g.units[i];
+        if (u->alive && u->player == p && u->x >= 0) { sx += u->x; sy += u->y; n++; }
+    }
+    if (!n) return;
+    cam_center_world((sx / n) * CELL + CELL / 2.0f, (sy / n) * CELL + CELL / 2.0f, -1, -1);
+}
+static void cam_to_unit(const unit_t *u) { if (u && u->x >= 0) cam_center_world(u->x * CELL + CELL / 2.0f, u->y * CELL + CELL / 2.0f, u->x, u->y); }
 static void cam_update(float dt) {
     float k = fminf(1.0f, dt * 9.0f);
     CAMX += (CAM_TX - CAMX) * k; CAMY += (CAM_TY - CAMY) * k;
@@ -349,6 +365,7 @@ static void enter_select(void) {
         snprintf(U.banner.text, sizeof U.banner.text, T->turn, tname(g->current));
         if (g->round != U.last_round) snprintf(U.banner.sub, sizeof U.banner.sub, T->round_of, g->round, RULES.max_rounds); else U.banner.sub[0] = 0;
         U.busy_until = NOW + 500;
+        if (g->current != U.last_current) cam_to_player(g->current);
         U.last_current = g->current; U.last_round = g->round; U.sel_idx = 0;
     }
     int ids[MAX_UNITS]; int n = sel_list(ids);
@@ -527,6 +544,7 @@ static void ai_execute(void) {
         int ids[MAX_UNITS]; int n = sel_list(ids);
         for (int i = 0; i < n; i++) if (ids[i] == d->unit_id) U.sel_idx = i;
         if (!activate(g, d->unit_id)) { ai_fallback(); break; }
+        cam_to_unit(active_unit(g));   /* que se vea a quién mueve Biddy */
         pump(); U.act_idx = 0; U.ai.steps = 0; enter_action(); U.busy_until = NOW + 300;
         break; }
     case BD_STEP: {
@@ -806,7 +824,7 @@ static char tile_at(int x, int y) {
 static void art_at(int id, int px, int py, int pal) { const art_t *t = &ART_TILE[id]; gfx_art(t->px, t->w, t->h, px, py, 2, false, TPAL[pal], 255, 0, 0); }
 static void draw_tile(char ch, int x, int y) {
     int px, py; cell_xy(x, y, &px, &py);
-    if (px <= -CELL || py <= -CELL || px >= SCR || py >= SCR) return;
+    if (px <= -CELL || py <= -CELL || px >= gfx_tw() || py >= gfx_th()) return;
     int id = TILE_GRASS0 + (int)(hash2(x, y) % 4), pal = 2;
     switch (ch) {
     case 'T': id = hash2(x, y) % 2 ? TILE_FOREST1 : TILE_FOREST; break; case ':': id = TILE_PATH; break; case 'R': id = TILE_MOUNTAIN; break; case '#': id = TILE_WALL; break;
@@ -834,11 +852,64 @@ static void draw_tile(char ch, int x, int y) {
             }
         }
     }
-    if (ch == 'I') { /* destello que cruza el hielo */
-        int ph = (int)((NOW / 40 + x * 7 + y * 13) % 90);
-        if (ph < 40) for (int k = 0; k < 4; k++) { int d = ph - k; if (d >= 0 && d < 40) gfx_fill_a(px + d, py + 39 - d, 2, 2, 0xFFFF, 190); }
-    }
     if (ch == 'C' && U.g.control_owner[y][x] >= 0) gfx_fill_a(px, py, CELL, CELL, TEAM[U.g.control_owner[y][x]].b, 30);
+}
+static void ice_glint(int x, int y) {   /* destello que cruza el hielo */
+    int px, py; cell_xy(x, y, &px, &py);
+    if (px <= -CELL || py <= -CELL || px >= SCR || py >= SCR) return;
+    int ph = (int)((NOW / 40 + x * 7 + y * 13) % 90);
+    if (ph < 40) for (int k = 0; k < 4; k++) { int d = ph - k; if (d >= 0 && d < 40) gfx_fill_a(px + d, py + 39 - d, 2, 2, 0xFFFF, 190); }
+}
+
+/* ---------- Caché del terreno ----------
+ * Dibujar ~140 casillas escaladas en cada cuadro era la mitad del tiempo de dibujo. El terreno
+ * fijo se dibuja una vez en un lienzo (PSRAM) y cada cuadro solo se copia la parte visible.
+ * El agua y la lava (animadas) y el destello del hielo se siguen dibujando encima en cada cuadro.
+ * La caché se rehace sola si cambian el mapa, las casillas o el dueño de un punto de control. */
+static uint16_t *TCACHE; static size_t TCACHE_CAP; static int TCW, TCH; static uint32_t TCACHE_SIG; static bool TCACHE_OK;
+static bool tile_animated(char ch) { return ch == '~' || ch == 'L'; }
+static uint32_t terrain_sig(void) {
+    const game_t *g = &U.g; uint32_t h = 2166136261u;
+    #define MIX(v) (h = (h ^ (uint32_t)(v)) * 16777619u)
+    MIX(g->map); MIX(g->w); MIX(g->h);
+    for (int y = 0; y < g->h; y++) for (int x = 0; x < g->w; x++) { MIX(g->tiles[y][x]); MIX(g->control_owner[y][x] + 2); }
+    #undef MIX
+    return h;
+}
+static void terrain_cache_build(void) {
+    const game_t *g = &U.g;
+    int cw = (g->w + 2 * SCENERY) * CELL, ch = (g->h + 2 * SCENERY) * CELL;
+    size_t need = (size_t)cw * ch * 2;
+    if (need > TCACHE_CAP) {
+        free(TCACHE); TCACHE = malloc(need); TCACHE_CAP = TCACHE ? need : 0;   /* > 10 KB: va a PSRAM */
+        if (!TCACHE) { TCACHE_OK = false; return; }
+    }
+    TCW = cw; TCH = ch;
+    int sbx = BX, sby = BY; BX = BY = SCENERY * CELL;
+    gfx_target(TCACHE, cw, ch);
+    for (int y = -SCENERY; y < g->h + SCENERY; y++) for (int x = -SCENERY; x < g->w + SCENERY; x++) {
+        char t = tile_at(x, y);
+        if (!tile_animated(t)) draw_tile(t, x, y);
+    }
+    gfx_target_screen(); BX = sbx; BY = sby;
+    TCACHE_SIG = terrain_sig(); TCACHE_OK = true;
+}
+void ui_terrain_cache_reset(void) { TCACHE_OK = false; }
+/* Fondo + terreno: copia filas enteras del lienzo (o del fondo donde no llega el tablero). */
+static bool terrain_blit(void) {
+    if (!TCACHE_OK || TCACHE_SIG != terrain_sig()) terrain_cache_build();
+    if (!TCACHE_OK) return false;
+    uint16_t *fb = gfx_fb(); const uint16_t *bg = gfx_bg();
+    int ox = BX - SCENERY * CELL, oy = BY - SCENERY * CELL;   /* esquina del lienzo en la pantalla */
+    int x0 = ox < 0 ? 0 : ox, x1 = ox + TCW > SCR ? SCR : ox + TCW;
+    for (int y = 0; y < SCR; y++) {
+        uint16_t *d = fb + y * SCR; const uint16_t *b = bg + y * SCR; int cy = y - oy;
+        if (cy < 0 || cy >= TCH || x1 <= x0) { memcpy(d, b, SCR * 2); continue; }
+        if (x0 > 0) memcpy(d, b, (size_t)x0 * 2);
+        memcpy(d + x0, TCACHE + (size_t)cy * TCW + (x0 - ox), (size_t)(x1 - x0) * 2);
+        if (x1 < SCR) memcpy(d + x1, b + x1, (size_t)(SCR - x1) * 2);
+    }
+    return true;
 }
 /* Torre de maná: columna de piedra con una esfera que flota, late y suelta chispas.
  * Si una criatura está en la torre, la esfera toma el color de su equipo. */
@@ -913,7 +984,21 @@ typedef struct { int x, y; uint16_t c; uint8_t a; } hl_t;
 typedef struct { hl_t hl[MAX_TARGETS]; int nhl; bool cursor; int cx, cy; uint16_t cc; bool ghost; int gx, gy, gcid, gp; } board_opts_t;
 static void draw_board(const board_opts_t *o) {
     game_t *g = &U.g;
-    for (int y = -SCENERY; y < g->h + SCENERY; y++) for (int x = -SCENERY; x < g->w + SCENERY; x++) draw_tile(tile_at(x, y), x, y);
+    if (terrain_blit()) {
+        /* solo lo animado: agua, lava y el destello del hielo, y solo lo que se ve */
+        int xa = (-BX) / CELL - 1, xb = (SCR - BX) / CELL + 1, ya = (-BY) / CELL - 1, yb = (SCR - BY) / CELL + 1;
+        if (xa < -SCENERY) xa = -SCENERY;
+        if (ya < -SCENERY) ya = -SCENERY;
+        if (xb > g->w + SCENERY - 1) xb = g->w + SCENERY - 1;
+        if (yb > g->h + SCENERY - 1) yb = g->h + SCENERY - 1;
+        for (int y = ya; y <= yb; y++) for (int x = xa; x <= xb; x++) {
+            char t = tile_at(x, y);
+            if (tile_animated(t)) draw_tile(t, x, y); else if (t == 'I') ice_glint(x, y);
+        }
+    } else {
+        gfx_background();
+        for (int y = -SCENERY; y < g->h + SCENERY; y++) for (int x = -SCENERY; x < g->w + SCENERY; x++) { char t = tile_at(x, y); draw_tile(t, x, y); if (t == 'I') ice_glint(x, y); }
+    }
     {   /* un castillo de cada equipo detrás de su lado del tablero */
         const art_t *c = &ART_TILE[TILE_CASTLE]; int px, py;
         cell_xy(g->w / 2, g->h, &px, &py); gfx_art(c->px, c->w, c->h, px - c->w, py + 8, 2, false, TPAL[0], 255, 0, 0);
@@ -1141,7 +1226,7 @@ static void panel(int x, int y, int w, int h, uint16_t edge);
 static void draw_cut(void);
 static void sc_deploy(void) {
     game_t *g = &U.g; target_t cells[MAX_TARGETS]; int n = deploy_cells(g, cells); char b[64];
-    if (!n) return;
+    if (!n) { gfx_background(); return; }
     int pl = g->deploy_q[g->dq_head].player, cid = g->deploy_q[g->dq_head].cid;
     if (U.deploy_idx >= n) U.deploy_idx = n - 1;
     board_opts_t o = {0};
@@ -1726,7 +1811,7 @@ void ui_frame(void) {
     if (U.victory_at && NOW >= U.victory_at) { U.victory_at = 0; to_victory(); }
     ai_drive();
     for (int i = 0; i < MAX_ANIMS; i++) { anim_t *a = &U.anims[i]; if (a->on && !a->deferred && NOW > a->t0 + a->dur + 50) a->on = false; }
-    gfx_background();
+    if (U.scene != SC_BATTLE && U.scene != SC_DEPLOY) gfx_background();   /* el tablero pone su propio fondo */
     switch (U.scene) {
     case SC_SPLASH: sc_splash(); break;
     case SC_MENU: sc_menu(); break;

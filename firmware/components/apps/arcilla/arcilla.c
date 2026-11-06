@@ -34,9 +34,9 @@
 #include <time.h>
 #endif
 
-#define ARCILLA_VERSION "0.7.0"
+#define ARCILLA_VERSION "0.7.1"
 #define APP_ID "arcilla"
-#define STRIP 24   /* filas por envío a la pantalla */
+#define STRIP 48   /* filas por envío: sys_raw_draw manda dos tiras de 24 seguidas sin esperar entre ellas */
 
 /* ---- Lo que el juego le pide a la plataforma ---- */
 uint32_t hal_ms(void)
@@ -118,6 +118,19 @@ static bool s_started;          /* el juego sigue en memoria al salir: al volver
 static bool s_down, s_drag, s_long;
 static int s_moved;
 static int s_tests_pass, s_tests_total;
+#ifdef ESP_PLATFORM
+static int64_t s_perf_t0, s_draw_us, s_send_us; static int s_frames;
+#endif
+
+static void *fast_alloc(size_t n)
+{
+#ifdef ESP_PLATFORM
+    void *p = heap_caps_malloc(n, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT);   /* RAM interna: mucho más rápida que la PSRAM */
+    return p ? p : heap_caps_malloc(n, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+#else
+    return malloc(n);
+#endif
+}
 
 static void *big_alloc(size_t n)
 {
@@ -135,7 +148,9 @@ static void flush(void)
     for (int y0 = 0; y0 < SCR; y0 += STRIP) {
         int h = SCR - y0 < STRIP ? SCR - y0 : STRIP;
         const uint16_t *src = s_fb + y0 * SCR;
-        for (int i = 0; i < SCR * h; i++) { uint16_t c = src[i]; s_strip[i] = (uint16_t)((c >> 8) | (c << 8)); }
+        /* de dos en dos píxeles: una lectura de 32 bits de la PSRAM en lugar de dos de 16 */
+        const uint32_t *s32 = (const uint32_t *)src; uint32_t *d32 = (uint32_t *)s_strip; int n2 = SCR * h / 2;
+        for (int i = 0; i < n2; i++) { uint32_t c = s32[i]; d32[i] = ((c & 0x00FF00FFu) << 8) | ((c >> 8) & 0x00FF00FFu); }
         sys_raw_draw(0, y0, SCR, h, s_strip);
     }
 }
@@ -148,7 +163,7 @@ static void arcilla_enter(lv_obj_t *screen)
     if (!s_fb) {
         s_fb = big_alloc(SCR * SCR * 2);
         s_bg = big_alloc(SCR * SCR * 2);
-        s_strip = big_alloc(SCR * STRIP * 2);   /* sys_raw_draw copia a sus propias tiras DMA */
+        s_strip = fast_alloc(SCR * STRIP * 2);  /* sys_raw_draw copia a sus propias tiras DMA */
         if (!s_fb || !s_bg || !s_strip) { sys_go_home(); return; }
         gfx_init(s_fb, s_bg);
     }
@@ -160,6 +175,9 @@ static void arcilla_enter(lv_obj_t *screen)
         s_started = true;
     }
     s_down = s_drag = s_long = false;
+#ifdef ESP_PLATFORM
+    s_perf_t0 = 0; s_draw_us = s_send_us = 0; s_frames = 0;
+#endif
     ui_frame(); flush();
 }
 
@@ -181,7 +199,25 @@ static void arcilla_touch(const touch_event_t *ev)
     }
 }
 
+#ifdef ESP_PLATFORM
+/* Cada 5 s imprime en el monitor los cuadros por segundo y en qué se va el tiempo. */
+static void arcilla_tick(uint32_t dt_ms)
+{
+    (void)dt_ms;
+    int64_t a = esp_timer_get_time(); ui_frame();
+    int64_t b = esp_timer_get_time(); flush();
+    int64_t c = esp_timer_get_time();
+    s_draw_us += b - a; s_send_us += c - b; s_frames++;
+    if (!s_perf_t0) s_perf_t0 = a;
+    if (c - s_perf_t0 >= 5000000) {
+        ESP_LOGI("arcilla", "%.1f cuadros/s · dibujo %d ms · envío %d ms (por cuadro)", s_frames * 1e6 / (double)(c - s_perf_t0),
+                 (int)(s_draw_us / s_frames / 1000), (int)(s_send_us / s_frames / 1000));
+        s_perf_t0 = c; s_draw_us = s_send_us = 0; s_frames = 0;
+    }
+}
+#else
 static void arcilla_tick(uint32_t dt_ms) { (void)dt_ms; ui_frame(); flush(); }
+#endif
 
 static void arcilla_exit(void) { ui_holding(false, 0); /* la partida queda en memoria hasta apagar la placa */ }
 
