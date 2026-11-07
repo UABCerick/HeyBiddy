@@ -443,6 +443,7 @@ static void poll_touch(void)
                     && s_active != launcher_app()
                     && !(s_active->flags & APP_FLAG_NO_HOME_GESTURE);
         if (home) {
+            ESP_LOGI(TAG, "gesto: deslizar desde arriba -> menu");
             deliver_touch(TOUCH_RELEASE, tdx, tdy);
             sys_haptic(KNOB_HAPTIC_EFFECT);
             sys_go_home();
