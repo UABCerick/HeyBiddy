@@ -3,14 +3,16 @@
  *
  * Todo ocurre en las tareas propias de ESP-IDF (eventos de Wi-Fi, lwIP y esp_timer),
  * nunca en la tarea de la interfaz:
- *   - al arrancar se conecta al SSID de menuconfig;
+ *   - la red se elige en la placa (Ajustes -> Wi-Fi) y se guarda en NVS ("net": ssid, pass);
+ *   - al arrancar, si hay red guardada, se conecta;
  *   - si se pierde la conexion, reintenta con un temporizador (2 s, 4 s, 8 s... maximo 30 s);
  *   - con IP, arranca SNTP; cuando llega la hora, net_time_synced() pasa a true.
  * La zona horaria (Londres) la fija main.c con TZ.
- * La configuracion del Wi-Fi se queda en RAM: no escribe nada en NVS.
  */
 #include <string.h>
+#include <stdlib.h>
 #include "net.h"
+#include "storage.h"
 #include "sdkconfig.h"
 #include "esp_log.h"
 #include "esp_wifi.h"
@@ -18,20 +20,43 @@
 #include "esp_netif_sntp.h"
 #include "esp_event.h"
 #include "esp_timer.h"
+#include "freertos/FreeRTOS.h"
 
 static const char *TAG = "net";
 
 #define RETRY_FIRST_MS 2000
 #define RETRY_MAX_MS   30000
+#define MAX_APS        20
 
 static volatile bool s_connected;
 static volatile bool s_synced;
+static volatile net_status_t s_status = NET_NO_NETWORK;
+static bool s_started;
 static bool s_sntp_started;
 static uint32_t s_retry_ms = RETRY_FIRST_MS;
 static esp_timer_handle_t s_retry_timer;
 
+static char s_ssid[33];
+static char s_pass[65];
+static bool s_have_net;
+
+/* busqueda de redes */
+static volatile bool s_scanning;
+static net_ap_t s_aps[MAX_APS];
+static int s_nap;
+static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
+
 bool net_is_connected(void) { return s_connected; }
 bool net_time_synced(void) { return s_synced; }
+net_status_t net_status(void) { return s_status; }
+
+bool net_saved_ssid(char *out, size_t len)
+{
+    if (!s_have_net) return false;
+    strncpy(out, s_ssid, len);
+    out[len - 1] = 0;
+    return true;
+}
 
 static void on_time_sync(struct timeval *tv)
 {
@@ -50,27 +75,105 @@ static void start_sntp(void)
     }
 }
 
+static void schedule_retry(uint32_t ms)
+{
+    esp_timer_stop(s_retry_timer);       /* por si ya habia uno pendiente */
+    esp_timer_start_once(s_retry_timer, (uint64_t)ms * 1000);
+}
+
 static void retry_cb(void *arg)
 {
-    ESP_LOGI(TAG, "reintentando conectar a \"%s\"", CONFIG_HEYBIDDY_WIFI_SSID);
+    if (!s_have_net || s_connected || s_scanning) return;
+    ESP_LOGI(TAG, "conectando a \"%s\"...", s_ssid);
     esp_wifi_connect();
+}
+
+static void apply_config(void)
+{
+    wifi_config_t cfg = {0};
+    strncpy((char *)cfg.sta.ssid, s_ssid, sizeof(cfg.sta.ssid));
+    strncpy((char *)cfg.sta.password, s_pass, sizeof(cfg.sta.password));
+    cfg.sta.threshold.authmode = s_pass[0] ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
+    cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;     /* hotspots WPA3 o mixtos */
+    esp_wifi_set_config(WIFI_IF_STA, &cfg);
+}
+
+static void collect_scan(void)
+{
+    uint16_t n = 0;
+    esp_wifi_scan_get_ap_num(&n);
+    if (n > 40) n = 40;
+    wifi_ap_record_t *rec = calloc(n ? n : 1, sizeof(*rec));
+    if (!rec) {
+        esp_wifi_clear_ap_list();
+        n = 0;
+    } else {
+        esp_wifi_scan_get_ap_records(&n, rec);   /* vienen ordenadas por senal */
+    }
+
+    net_ap_t tmp[MAX_APS];
+    int k = 0;
+    for (int i = 0; i < n && k < MAX_APS; i++) {
+        const char *ssid = (const char *)rec[i].ssid;
+        if (!ssid[0]) continue;                  /* redes ocultas */
+        bool dup = false;
+        for (int j = 0; j < k; j++) if (!strcmp(tmp[j].ssid, ssid)) dup = true;
+        if (dup) continue;
+        strncpy(tmp[k].ssid, ssid, sizeof(tmp[k].ssid));
+        tmp[k].ssid[32] = 0;
+        tmp[k].rssi = rec[i].rssi;
+        tmp[k].secure = rec[i].authmode != WIFI_AUTH_OPEN;
+        k++;
+    }
+    free(rec);
+
+    portENTER_CRITICAL(&s_lock);
+    memcpy(s_aps, tmp, sizeof(tmp));
+    s_nap = k;
+    s_scanning = false;
+    portEXIT_CRITICAL(&s_lock);
+    ESP_LOGI(TAG, "busqueda: %d redes", k);
+}
+
+static bool is_wrong_password(uint8_t r)
+{
+    return r == WIFI_REASON_AUTH_FAIL || r == WIFI_REASON_4WAY_HANDSHAKE_TIMEOUT ||
+           r == WIFI_REASON_HANDSHAKE_TIMEOUT || r == WIFI_REASON_MIC_FAILURE;
+}
+
+static bool is_not_found(uint8_t r)
+{
+    return r == WIFI_REASON_NO_AP_FOUND || r == WIFI_REASON_NO_AP_FOUND_W_COMPATIBLE_SECURITY ||
+           r == WIFI_REASON_NO_AP_FOUND_IN_AUTHMODE_THRESHOLD || r == WIFI_REASON_NO_AP_FOUND_IN_RSSI_THRESHOLD;
 }
 
 static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
 {
     if (base == WIFI_EVENT && id == WIFI_EVENT_STA_START) {
-        esp_wifi_connect();
+        if (s_have_net) schedule_retry(10);
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_STA_DISCONNECTED) {
         const wifi_event_sta_disconnected_t *d = data;
         if (s_connected) ESP_LOGW(TAG, "se perdio la conexion (motivo %d)", d->reason);
+        else ESP_LOGI(TAG, "no se pudo conectar (motivo %d)", d->reason);
         s_connected = false;
-        esp_timer_stop(s_retry_timer);   /* por si ya habia uno pendiente */
-        esp_timer_start_once(s_retry_timer, (uint64_t)s_retry_ms * 1000);
+        if (!s_have_net) {
+            s_status = NET_NO_NETWORK;
+            return;
+        }
+        if (is_wrong_password(d->reason)) s_status = NET_WRONG_PASSWORD;
+        else if (is_not_found(d->reason)) s_status = NET_NOT_FOUND;
+        else if (s_status == NET_CONNECTED) s_status = NET_CONNECTING;
+        if (s_scanning) return;                  /* se reintenta al terminar la busqueda */
+        schedule_retry(s_retry_ms);
         s_retry_ms = s_retry_ms * 2 > RETRY_MAX_MS ? RETRY_MAX_MS : s_retry_ms * 2;
+    } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
+        collect_scan();
+        if (s_have_net && !s_connected) schedule_retry(300);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *e = data;
-        ESP_LOGI(TAG, "conectado, IP " IPSTR, IP2STR(&e->ip_info.ip));
+        ESP_LOGI(TAG, "conectado a \"%s\", IP " IPSTR, s_ssid, IP2STR(&e->ip_info.ip));
         s_connected = true;
+        s_status = NET_CONNECTED;
         s_retry_ms = RETRY_FIRST_MS;
         start_sntp();
     } else if (base == IP_EVENT && id == IP_EVENT_STA_LOST_IP) {
@@ -78,11 +181,88 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
     }
 }
 
+bool net_scan_start(void)
+{
+    if (!s_started) return false;
+    portENTER_CRITICAL(&s_lock);
+    bool busy = s_scanning;
+    s_scanning = true;
+    portEXIT_CRITICAL(&s_lock);
+    if (busy) return true;
+
+    if (!s_connected) {
+        /* un intento de conexion en curso no deja buscar: se pausa y se retoma al terminar */
+        esp_timer_stop(s_retry_timer);
+        esp_wifi_disconnect();
+    }
+    wifi_scan_config_t sc = {.show_hidden = false};
+    esp_err_t err = esp_wifi_scan_start(&sc, false);
+    if (err != ESP_OK) {
+        ESP_LOGW(TAG, "no se pudo buscar redes: %s", esp_err_to_name(err));
+        portENTER_CRITICAL(&s_lock);
+        s_scanning = false;
+        portEXIT_CRITICAL(&s_lock);
+        if (s_have_net && !s_connected) schedule_retry(1000);
+        return false;
+    }
+    return true;
+}
+
+int net_scan_results(net_ap_t *out, int max)
+{
+    portENTER_CRITICAL(&s_lock);
+    int n = -1;
+    if (!s_scanning) {
+        n = s_nap < max ? s_nap : max;
+        memcpy(out, s_aps, (size_t)n * sizeof(net_ap_t));
+    }
+    portEXIT_CRITICAL(&s_lock);
+    return n;
+}
+
+void net_connect(const char *ssid, const char *pass)
+{
+    strncpy(s_ssid, ssid, sizeof(s_ssid));
+    s_ssid[sizeof(s_ssid) - 1] = 0;
+    strncpy(s_pass, pass ? pass : "", sizeof(s_pass));
+    s_pass[sizeof(s_pass) - 1] = 0;
+    s_have_net = true;
+    storage_set_str(NET_NS, "ssid", s_ssid);
+    storage_set_str(NET_NS, "pass", s_pass);
+    ESP_LOGI(TAG, "red guardada: \"%s\"", s_ssid);
+    if (!s_started) return;
+
+    s_status = NET_CONNECTING;
+    s_retry_ms = RETRY_FIRST_MS;
+    esp_timer_stop(s_retry_timer);
+    s_connected = false;
+    esp_wifi_disconnect();
+    apply_config();
+    schedule_retry(300);
+}
+
+void net_forget(void)
+{
+    s_have_net = false;
+    s_ssid[0] = s_pass[0] = 0;
+    storage_erase_key(NET_NS, "ssid");
+    storage_erase_key(NET_NS, "pass");
+    s_status = NET_NO_NETWORK;
+    ESP_LOGI(TAG, "red olvidada");
+    if (!s_started) return;
+    esp_timer_stop(s_retry_timer);
+    esp_wifi_disconnect();
+    s_connected = false;
+}
+
 void net_start(void)
 {
-    if (strlen(CONFIG_HEYBIDDY_WIFI_SSID) == 0) {
-        ESP_LOGW(TAG, "sin SSID: pon el hotspot en idf.py menuconfig -> Hey Biddy: Wi-Fi");
-        return;
+    if (storage_get_str(NET_NS, "ssid", s_ssid, sizeof(s_ssid)) == ESP_OK && s_ssid[0]) {
+        if (storage_get_str(NET_NS, "pass", s_pass, sizeof(s_pass)) != ESP_OK) s_pass[0] = 0;
+        s_have_net = true;
+        s_status = NET_CONNECTING;
+    } else {
+        ESP_LOGI(TAG, "sin red guardada: elige una en Ajustes -> Wi-Fi");
     }
 
     ESP_ERROR_CHECK(esp_netif_init());
@@ -95,19 +275,13 @@ void net_start(void)
 
     wifi_init_config_t init = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&init));
-    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));
+    ESP_ERROR_CHECK(esp_wifi_set_storage(WIFI_STORAGE_RAM));   /* la red la guardamos nosotros en "net" */
 
     ESP_ERROR_CHECK(esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID, on_event, NULL));
     ESP_ERROR_CHECK(esp_event_handler_register(IP_EVENT, ESP_EVENT_ANY_ID, on_event, NULL));
 
-    wifi_config_t cfg = {0};
-    strncpy((char *)cfg.sta.ssid, CONFIG_HEYBIDDY_WIFI_SSID, sizeof(cfg.sta.ssid));
-    strncpy((char *)cfg.sta.password, CONFIG_HEYBIDDY_WIFI_PASSWORD, sizeof(cfg.sta.password));
-    cfg.sta.threshold.authmode = strlen(CONFIG_HEYBIDDY_WIFI_PASSWORD) ? WIFI_AUTH_WPA2_PSK : WIFI_AUTH_OPEN;
-    cfg.sta.sae_pwe_h2e = WPA3_SAE_PWE_BOTH;     /* hotspots WPA3 o mixtos */
-
     ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &cfg));
+    if (s_have_net) apply_config();
     ESP_ERROR_CHECK(esp_wifi_start());
-    ESP_LOGI(TAG, "conectando a \"%s\"...", CONFIG_HEYBIDDY_WIFI_SSID);
+    s_started = true;
 }

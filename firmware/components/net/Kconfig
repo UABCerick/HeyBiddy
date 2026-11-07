@@ -1,19 +1,7 @@
 menu "Hey Biddy: Wi-Fi"
 
-    config HEYBIDDY_WIFI_SSID
-        string "Nombre de la red (SSID)"
-        default ""
-        help
-            Nombre del hotspot al que se conecta la placa.
-            Se guarda en sdkconfig, que esta en .gitignore: nunca llega al repo.
-            Vacio = la placa no intenta conectarse.
-
-    config HEYBIDDY_WIFI_PASSWORD
-        string "Contrasena"
-        default ""
-        help
-            Contrasena del hotspot (WPA2 o WPA3). Vacia = red abierta.
-            Se guarda en sdkconfig, que esta en .gitignore.
+    # La red y la contrasena NO van aqui: se eligen en la placa (Ajustes -> Wi-Fi)
+    # y se guardan en NVS (namespace "net").
 
     config HEYBIDDY_SNTP_SERVER
         string "Servidor de hora (SNTP)"
