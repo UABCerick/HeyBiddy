@@ -29,6 +29,21 @@ void sys_haptic_click(void);            /* el click corto que usa la perilla */
 typedef void (*sys_ui_fn_t)(void *arg);
 bool sys_run_on_ui(sys_ui_fn_t fn, void *arg);
 
+/* ---- Red y hora ----
+ * El sistema se conecta solo al hotspot (menuconfig -> Hey Biddy: Wi-Fi) y pone la hora por SNTP.
+ * La hora se lee con time() / localtime_r() como siempre (zona: Londres). */
+bool sys_net_connected(void);           /* true si hay Wi-Fi con IP ahora mismo */
+bool sys_time_synced(void);             /* true si la hora vino de internet (sigue en true sin Wi-Fi) */
+
+/* ---- Standby ----
+ * Tras un rato sin perilla ni touch la pantalla se apaga. La app sigue abierta y su on_tick
+ * sigue corriendo, pero no recibe perilla ni touch. Un doble tap la enciende.
+ * sys_wake() la enciende desde la app (por ejemplo, una alarma). */
+void sys_wake(void);
+bool sys_is_standby(void);
+uint16_t sys_get_standby_s(void);       /* segundos sin tocar nada antes del standby; 0 = nunca */
+void     sys_set_standby_s(uint16_t s); /* lo usa la app Ajustes; se guarda en NVS */
+
 /* ---- Pantalla directa (solo apps con APP_FLAG_RAW_DISPLAY) ----
  * Copia un rectangulo de pixeles a la pantalla y espera a que termine.
  * pixels: RGB565 con los bytes invertidos (big-endian), w*h valores, filas seguidas.

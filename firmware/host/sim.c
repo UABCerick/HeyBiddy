@@ -63,7 +63,15 @@ void sys_set_brightness(uint8_t p) { bright = p; }
 bool sys_get_haptic_enabled(void) { return haptic; }
 void sys_set_haptic_enabled(bool on) { haptic = on; }
 uint32_t sys_get_boot_count(void) { return 7; }
-const char *sys_firmware_version(void) { return "0.1.0"; }
+const char *sys_firmware_version(void) { return "0.3.0"; }
+static bool net_on, synced;
+static uint16_t standby_s = 60;
+bool sys_net_connected(void) { return net_on; }
+bool sys_time_synced(void) { return synced; }
+void sys_wake(void) {}
+bool sys_is_standby(void) { return false; }
+uint16_t sys_get_standby_s(void) { return standby_s; }
+void sys_set_standby_s(uint16_t s) { standby_s = s; }
 size_t sys_app_count(void) { return g_app_count; }
 const app_t *sys_app_at(size_t i) { return i < g_app_count ? g_apps[i] : NULL; }
 
@@ -189,11 +197,21 @@ int main(int argc, char **argv)
     touch(TOUCH_TAP, 180, 180); touch(TOUCH_TAP, 180, 180);
     run(1200);
     snprintf(p, sizeof p, "%s/06_reloj", dir); shot(p);
+    net_on = synced = true;                /* como si SNTP ya hubiera puesto la hora */
+    sys_open_app("clock"); run(300);
+    snprintf(p, sizeof p, "%s/06b_reloj_wifi", dir); shot(p);
+    touch(TOUCH_LONG_PRESS, 180, 180);
+    snprintf(p, sizeof p, "%s/06c_reloj_hora_internet", dir); shot(p);
     sys_open_app("settings"); run(100);
     snprintf(p, sizeof p, "%s/07_ajustes", dir); shot(p);
     touch(TOUCH_TAP, 180, 180);
     snprintf(p, sizeof p, "%s/08_ajustes_brillo", dir); shot(p);
     touch(TOUCH_TAP, 180, 180);
+    knob(+1); knob(+1);                    /* Pantalla oscura */
+    touch(TOUCH_TAP, 180, 180); knob(+1);
+    snprintf(p, sizeof p, "%s/08b_ajustes_standby", dir); shot(p);
+    touch(TOUCH_TAP, 180, 180); knob(+1);
+    snprintf(p, sizeof p, "%s/08c_ajustes_wifi", dir); shot(p);
     knob(+1); knob(+1); knob(+1); knob(+1); knob(+1); knob(+1);
     snprintf(p, sizeof p, "%s/09_ajustes_apps", dir); shot(p);
     sys_open_app("arcilla"); run(1500);    /* app de pantalla propia */

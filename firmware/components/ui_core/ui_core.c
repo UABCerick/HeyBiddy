@@ -9,6 +9,9 @@
  *   5. llama on_tick de la app activa
  *   6. deja que LVGL dibuje (salvo en apps de pantalla directa)
  *
+ * Standby: tras el tiempo de Ajustes (60 s por defecto) sin perilla ni touch se apaga la luz. La app sigue abierta
+ * y recibe on_tick, pero no perilla ni touch; solo un doble tap enciende la pantalla.
+ *
  * Como todo ocurre en la misma tarea, las apps nunca necesitan candados.
  */
 #include <string.h>
@@ -18,6 +21,7 @@
 #include "board.h"
 #include "storage.h"
 #include "launcher.h"
+#include "net.h"
 #include "esp_log.h"
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
@@ -39,6 +43,9 @@ static const char *TAG = "sys";
 #define HOME_EDGE_Y          60          /* deslizar hacia abajo empezando aqui arriba = menu */
 #define HOME_MIN_DY          70
 #define KNOB_HAPTIC_EFFECT   6           /* "Sharp Click 30%" */
+#define STANDBY_DEFAULT_S    60          /* sin tocar nada este tiempo = pantalla oscura (se cambia en Ajustes) */
+#define DOUBLE_TAP_MS        500         /* maximo entre los dos toques para despertar */
+#define WAKE_HAPTIC_EFFECT   7           /* golpe suave al despertar */
 
 /* ------------------------------------------------------------ estado */
 
@@ -71,6 +78,12 @@ static SemaphoreHandle_t s_raw_sem;
 /* touch */
 static bool s_touch_down;
 static int16_t s_tx, s_ty;               /* posicion actual (tambien la lee LVGL) */
+
+/* standby */
+static bool s_standby;
+static uint16_t s_standby_s = STANDBY_DEFAULT_S;   /* 0 = nunca */
+static volatile bool s_wake_req;
+static int64_t s_last_input;             /* ms de la ultima perilla o toque */
 
 /* ------------------------------------------------------ pantalla / LVGL */
 
@@ -262,6 +275,69 @@ uint32_t sys_get_boot_count(void) { return s_boot_count; }
 
 const char *sys_firmware_version(void) { return esp_app_get_description()->version; }
 
+bool sys_net_connected(void) { return net_is_connected(); }
+bool sys_time_synced(void) { return net_time_synced(); }
+
+/* ------------------------------------------------------ standby */
+
+void sys_wake(void) { s_wake_req = true; }
+bool sys_is_standby(void) { return s_standby; }
+
+uint16_t sys_get_standby_s(void) { return s_standby_s; }
+
+void sys_set_standby_s(uint16_t sec)
+{
+    s_standby_s = sec;
+    s_last_input = esp_timer_get_time() / 1000;   /* el conteo empieza de nuevo */
+    storage_set_i32(SYS_NS, "standby_s", sec);
+}
+
+static void enter_standby(void)
+{
+    s_standby = true;
+    board_backlight_set(0);
+    ESP_LOGI(TAG, "standby (doble tap para despertar)");
+}
+
+static void leave_standby(int64_t now)
+{
+    s_standby = false;
+    s_last_input = now;
+    board_backlight_set(s_brightness);
+    ESP_LOGI(TAG, "despierto");
+}
+
+/* En standby el touch solo busca un doble tap; nada llega a la app ni a LVGL. */
+static void poll_touch_standby(int64_t now)
+{
+    static bool down, moved;
+    static int64_t down_at, last_tap_at = -100000;
+    static uint16_t sx, sy;
+
+    uint16_t x, y;
+    bool d = board_touch_read(&x, &y);
+    if (d && !down) {
+        down = true;
+        moved = false;
+        down_at = now;
+        sx = x;
+        sy = y;
+    } else if (d && down) {
+        if (abs(x - sx) > TAP_MAX_MOVE || abs(y - sy) > TAP_MAX_MOVE) moved = true;
+    } else if (!d && down) {
+        down = false;
+        bool tap = !moved && now - down_at < LONG_PRESS_MS;
+        if (!tap) return;
+        if (now - last_tap_at <= DOUBLE_TAP_MS) {
+            last_tap_at = -100000;
+            leave_standby(now);
+            sys_haptic(WAKE_HAPTIC_EFFECT);
+        } else {
+            last_tap_at = now;
+        }
+    }
+}
+
 void sys_haptic(uint8_t effect)
 {
     if (s_haptic_on) board_haptic_play(effect);
@@ -274,6 +350,7 @@ static void load_settings(void)
     int32_t v;
     if (storage_get_i32(SYS_NS, "brightness", &v) == ESP_OK) s_brightness = (uint8_t)v;
     if (storage_get_i32(SYS_NS, "haptic", &v) == ESP_OK) s_haptic_on = v != 0;
+    if (storage_get_i32(SYS_NS, "standby_s", &v) == ESP_OK && v >= 0 && v <= 3600) s_standby_s = (uint16_t)v;
     v = 0;
     storage_get_i32(SYS_NS, "boots", &v);
     s_boot_count = (uint32_t)v + 1;
@@ -316,6 +393,7 @@ static void poll_touch(void)
     if (down) {
         s_tx = x;
         s_ty = y;
+        s_last_input = now;
     }
 
     if (down && !s_touch_down) {                       /* empieza un toque */
@@ -375,6 +453,7 @@ static void poll_touch(void)
 static void sys_task(void *arg)
 {
     int64_t last_touch = 0, last_tick = esp_timer_get_time() / 1000, last_lv = last_tick;
+    s_last_input = last_tick;
 
     for (;;) {
         int64_t now = esp_timer_get_time() / 1000;
@@ -386,15 +465,28 @@ static void sys_task(void *arg)
             job.fn(job.arg);
         }
 
+        if (s_wake_req) {
+            s_wake_req = false;
+            if (s_standby) leave_standby(now);
+            else s_last_input = now;
+        }
+
         int8_t dir;
         while (xQueueReceive(s_knob_q, &dir, 0) == pdTRUE) {
+            if (s_standby) continue;                   /* en standby la perilla no hace nada */
+            s_last_input = now;
             sys_haptic_click();
             if (s_active && s_active->on_knob) s_active->on_knob(dir);
         }
 
         if (now - last_touch >= TOUCH_POLL_MS) {
             last_touch = now;
-            poll_touch();
+            if (s_standby) poll_touch_standby(now);
+            else poll_touch();
+        }
+
+        if (s_standby_s && !s_standby && !s_touch_down && now - s_last_input >= (int64_t)s_standby_s * 1000) {
+            enter_standby();
         }
 
         if (s_pending) {
