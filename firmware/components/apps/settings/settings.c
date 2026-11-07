@@ -5,14 +5,16 @@
  *   tocar en "Brillo": entrar/salir de edicion (la perilla cambia el valor)
  *   tocar en "Vibración": encender/apagar
  *   tocar en "Pantalla oscura": entrar/salir de edicion (la perilla elige el tiempo del standby)
+ *   tocar en "Wi-Fi": elegir red y escribir la contrasena (wifi.c)
  */
 #include <stdio.h>
 #include "app.h"
 #include "sys.h"
 #include "biddy_fonts.h"
+#include "wifi.h"
 #include "esp_heap_caps.h"
 
-#define SETTINGS_VERSION "0.2.0"
+#define SETTINGS_VERSION "0.3.0"
 #define ACCENT 0x9B8CFF
 #define ROW_GAP 48
 #define MAX_ROWS 40
@@ -24,6 +26,8 @@ static int s_nrows;
 static int s_sel;
 static bool s_editing;
 static lv_obj_t *s_title;
+static lv_obj_t *s_screen;
+static uint32_t s_tick_acc;
 
 /* opciones del standby, en segundos (0 = nunca) */
 static const uint16_t STANDBY_OPTS[] = {15, 30, 60, 120, 300, 600, 0};
@@ -60,8 +64,7 @@ static void row_text(int i, char *buf, size_t len)
         break;
     }
     case ROW_WIFI:
-        snprintf(buf, len, "Wi-Fi  %s%s", sys_net_connected() ? "conectado" : "sin conexión",
-                 sys_time_synced() ? " · hora ok" : "");
+        snprintf(buf, len, "Wi-Fi  %s  " LV_SYMBOL_RIGHT, sys_net_connected() ? "conectado" : "sin conexión");
         break;
     case ROW_FIRMWARE:
         snprintf(buf, len, "Firmware  %s", sys_firmware_version());
@@ -111,6 +114,9 @@ static void settings_enter(lv_obj_t *scr)
 {
     s_sel = 0;
     s_editing = false;
+    s_screen = scr;
+    s_tick_acc = 0;
+    wifi_screen_reset();
     s_nrows = ROW_FIRST_APP + (int)sys_app_count();
     if (s_nrows > MAX_ROWS) s_nrows = MAX_ROWS;
 
@@ -137,6 +143,10 @@ static void settings_enter(lv_obj_t *scr)
 
 static void settings_knob(int dir)
 {
+    if (wifi_screen_active()) {
+        wifi_screen_knob(dir);
+        return;
+    }
     if (s_editing && s_sel == ROW_BRIGHTNESS) {
         int b = sys_get_brightness() + dir * 5;
         if (b < 5) b = 5;
@@ -157,12 +167,20 @@ static void settings_knob(int dir)
 
 static void settings_touch(const touch_event_t *ev)
 {
+    if (wifi_screen_active()) {
+        wifi_screen_touch(ev);
+        if (!wifi_screen_active()) layout();   /* volvio a la lista de Ajustes */
+        return;
+    }
     if (ev->type == TOUCH_TAP) {
         if (s_sel == ROW_BRIGHTNESS || s_sel == ROW_STANDBY) {
             s_editing = !s_editing;
         } else if (s_sel == ROW_HAPTIC) {
             sys_set_haptic_enabled(!sys_get_haptic_enabled());
             sys_haptic(1);
+        } else if (s_sel == ROW_WIFI) {
+            wifi_screen_open(s_screen);
+            return;
         }
         layout();
     } else if (ev->type == TOUCH_SWIPE_UP || ev->type == TOUCH_SWIPE_DOWN) {
@@ -172,7 +190,20 @@ static void settings_touch(const touch_event_t *ev)
 
 static void settings_tick(uint32_t dt_ms)
 {
-    if (!s_editing) layout();   /* refresca Wi-Fi y memoria libre */
+    if (wifi_screen_active()) {
+        wifi_screen_tick();
+        return;
+    }
+    s_tick_acc += dt_ms;
+    if (s_tick_acc >= 1000) {
+        s_tick_acc = 0;
+        if (!s_editing) layout();   /* refresca Wi-Fi y memoria libre */
+    }
+}
+
+static void settings_exit(void)
+{
+    wifi_screen_reset();            /* el sistema borra la pantalla con todo lo de Wi-Fi */
 }
 
 const app_t app_settings = {
@@ -181,9 +212,10 @@ const app_t app_settings = {
     .version = SETTINGS_VERSION,
     .icon = LV_SYMBOL_SETTINGS,
     .color = ACCENT,
-    .tick_ms = 1000,
+    .tick_ms = 200,
     .on_enter = settings_enter,
     .on_knob = settings_knob,
     .on_touch = settings_touch,
     .on_tick = settings_tick,
+    .on_exit = settings_exit,
 };
