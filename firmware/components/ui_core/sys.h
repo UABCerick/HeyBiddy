@@ -30,10 +30,32 @@ typedef void (*sys_ui_fn_t)(void *arg);
 bool sys_run_on_ui(sys_ui_fn_t fn, void *arg);
 
 /* ---- Red y hora ----
- * El sistema se conecta solo al hotspot (menuconfig -> Hey Biddy: Wi-Fi) y pone la hora por SNTP.
+ * La red se elige en la placa (Ajustes -> Wi-Fi) y se guarda en NVS; al arrancar el sistema
+ * se conecta solo y pone la hora por SNTP.
  * La hora se lee con time() / localtime_r() como siempre (zona: Londres). */
 bool sys_net_connected(void);           /* true si hay Wi-Fi con IP ahora mismo */
 bool sys_time_synced(void);             /* true si la hora vino de internet (sigue en true sin Wi-Fi) */
+
+typedef enum {
+    SYS_WIFI_NO_NETWORK,                /* no hay red guardada */
+    SYS_WIFI_CONNECTING,
+    SYS_WIFI_CONNECTED,
+    SYS_WIFI_WRONG_PASSWORD,
+    SYS_WIFI_NOT_FOUND,                 /* la red guardada no aparece */
+} sys_wifi_status_t;
+
+typedef struct {
+    char ssid[33];
+    int8_t rssi;                        /* dBm: -50 muy buena, -80 mala */
+    bool secure;                        /* pide contrasena */
+} sys_wifi_ap_t;
+
+sys_wifi_status_t sys_wifi_status(void);
+bool sys_wifi_saved_ssid(char *out, size_t len);        /* false si no hay red guardada */
+bool sys_wifi_scan_start(void);                          /* buscar redes (asincrono) */
+int  sys_wifi_scan_results(sys_wifi_ap_t *out, int max); /* -1 mientras busca; luego cuantas copio */
+void sys_wifi_connect(const char *ssid, const char *pass); /* guarda la red y se conecta ("" = abierta) */
+void sys_wifi_forget(void);                              /* borra la red guardada */
 
 /* ---- Standby ----
  * Tras un rato sin perilla ni touch la pantalla se apaga. La app sigue abierta y su on_tick

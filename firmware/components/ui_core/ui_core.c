@@ -277,6 +277,19 @@ const char *sys_firmware_version(void) { return esp_app_get_description()->versi
 
 bool sys_net_connected(void) { return net_is_connected(); }
 bool sys_time_synced(void) { return net_time_synced(); }
+sys_wifi_status_t sys_wifi_status(void) { return (sys_wifi_status_t)net_status(); }
+bool sys_wifi_saved_ssid(char *out, size_t len) { return net_saved_ssid(out, len); }
+bool sys_wifi_scan_start(void) { return net_scan_start(); }
+void sys_wifi_connect(const char *ssid, const char *pass) { net_connect(ssid, pass); }
+void sys_wifi_forget(void) { net_forget(); }
+
+_Static_assert(sizeof(sys_wifi_ap_t) == sizeof(net_ap_t), "sys_wifi_ap_t y net_ap_t deben coincidir");
+_Static_assert((int)SYS_WIFI_NOT_FOUND == (int)NET_NOT_FOUND, "sys_wifi_status_t y net_status_t deben coincidir");
+
+int sys_wifi_scan_results(sys_wifi_ap_t *out, int max)
+{
+    return net_scan_results((net_ap_t *)out, max);
+}
 
 /* ------------------------------------------------------ standby */
 
@@ -522,7 +535,7 @@ static void check_registry(void)
         if (strlen(a->id) > 15) {
             ESP_LOGE(TAG, "el id '%s' mide mas de 15 letras: NVS no lo acepta", a->id);
         }
-        if (strcmp(a->id, SYS_NS) == 0 || strcmp(a->id, "launcher") == 0) {
+        if (strcmp(a->id, SYS_NS) == 0 || strcmp(a->id, "launcher") == 0 || strcmp(a->id, NET_NS) == 0) {
             ESP_LOGE(TAG, "el id '%s' esta reservado por el sistema", a->id);
         }
         for (size_t j = 0; j < i; j++) {

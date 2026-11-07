@@ -72,6 +72,19 @@ void sys_wake(void) {}
 bool sys_is_standby(void) { return false; }
 uint16_t sys_get_standby_s(void) { return standby_s; }
 void sys_set_standby_s(uint16_t s) { standby_s = s; }
+/* Wi-Fi de mentira para las capturas */
+static char saved_ssid[33] = "Pixel de Erick";
+static sys_wifi_status_t wifi_st = SYS_WIFI_CONNECTED;
+static const sys_wifi_ap_t fake_aps[] = {
+    {"Pixel de Erick", -48, true}, {"VM4521337", -63, true}, {"BTWi-fi", -70, false},
+    {"SKY-HOUSE-5G con nombre muy largo", -79, true},
+};
+sys_wifi_status_t sys_wifi_status(void) { return wifi_st; }
+bool sys_wifi_saved_ssid(char *o, size_t l) { if (!saved_ssid[0]) return false; snprintf(o, l, "%s", saved_ssid); return true; }
+bool sys_wifi_scan_start(void) { return true; }
+int sys_wifi_scan_results(sys_wifi_ap_t *o, int max) { int n = 4 < max ? 4 : max; memcpy(o, fake_aps, n * sizeof(*o)); return n; }
+void sys_wifi_connect(const char *ss, const char *p) { snprintf(saved_ssid, 33, "%s", ss); wifi_st = SYS_WIFI_CONNECTING; }
+void sys_wifi_forget(void) { saved_ssid[0] = 0; wifi_st = SYS_WIFI_NO_NETWORK; }
 size_t sys_app_count(void) { return g_app_count; }
 const app_t *sys_app_at(size_t i) { return i < g_app_count ? g_apps[i] : NULL; }
 
@@ -212,6 +225,19 @@ int main(int argc, char **argv)
     snprintf(p, sizeof p, "%s/08b_ajustes_standby", dir); shot(p);
     touch(TOUCH_TAP, 180, 180); knob(+1);
     snprintf(p, sizeof p, "%s/08c_ajustes_wifi", dir); shot(p);
+    touch(TOUCH_TAP, 180, 180); run(400);  /* abre la pantalla Wi-Fi */
+    snprintf(p, sizeof p, "%s/08d_wifi_redes", dir); shot(p);
+    knob(+1); touch(TOUCH_TAP, 180, 180);  /* VM4521337 pide contrasena */
+    touch(TOUCH_TAP, 180, 180); knob(+1); touch(TOUCH_TAP, 180, 180);
+    touch(TOUCH_SWIPE_UP, 180, 180); knob(+3); touch(TOUCH_TAP, 180, 180);
+    touch(TOUCH_SWIPE_UP, 180, 180); knob(+4); knob(+1);
+    snprintf(p, sizeof p, "%s/08e_wifi_clave", dir); shot(p);
+    touch(TOUCH_LONG_PRESS, 180, 180);
+    snprintf(p, sizeof p, "%s/08f_wifi_clave_corta", dir); shot(p);
+    touch(TOUCH_SWIPE_RIGHT, 180, 180);    /* volver a la lista */
+    knob(+5);
+    snprintf(p, sizeof p, "%s/08g_wifi_opciones", dir); shot(p);
+    knob(+3); touch(TOUCH_TAP, 180, 180);  /* Volver */
     knob(+1); knob(+1); knob(+1); knob(+1); knob(+1); knob(+1);
     snprintf(p, sizeof p, "%s/09_ajustes_apps", dir); shot(p);
     sys_open_app("arcilla"); run(1500);    /* app de pantalla propia */
