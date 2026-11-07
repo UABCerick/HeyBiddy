@@ -14,6 +14,9 @@
 #include "wifi.h"
 #include "sys.h"
 #include "biddy_fonts.h"
+#include "esp_log.h"
+
+static const char *TAG = "wifi_ui";
 
 #define ACCENT  0x9B8CFF
 #define GREY    0x8A93A6
@@ -200,7 +203,7 @@ static void show_list(void)
 static void start_scan(void)
 {
     s_nap = -1;
-    sys_wifi_scan_start();
+    if (!sys_wifi_scan_start()) ESP_LOGW(TAG, "no se pudo empezar la busqueda");
     build_items();
     s_sel = 0;
 }
@@ -309,6 +312,7 @@ void wifi_screen_open(lv_obj_t *parent)
     s_parent = parent;
     s_view = NULL;
     s_sel = 0;
+    ESP_LOGI(TAG, "pantalla Wi-Fi abierta");
     start_scan();
     show_list();
 }
@@ -367,6 +371,7 @@ void wifi_screen_touch(const touch_event_t *ev)
             list_layout();
             break;
         case IT_BACK:
+            ESP_LOGI(TAG, "volver a Ajustes");
             close_screen();
             break;
         }
@@ -410,6 +415,7 @@ void wifi_screen_tick(void)
         if (s_nap < 0) {
             int n = sys_wifi_scan_results(s_aps, MAX_APS);
             if (n >= 0) {
+                ESP_LOGI(TAG, "%d redes en la lista", n);
                 s_nap = n;
                 build_items();
                 changed = true;
