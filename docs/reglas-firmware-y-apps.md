@@ -7,7 +7,7 @@
 - `components/ui_core/`: el sistema. Contiene el **menú circular** (`launcher.c`), el **gestor de apps** y los gestos (`ui_core.c`), el **contrato de apps** (`app.h`) y los servicios para las apps (`sys.h`). Deslizar hacia abajo desde el borde de arriba siempre regresa al menú.
 - `components/board/`: todo el hardware. Solo lo usa el sistema.
 - `components/storage/`: datos en NVS, separados por app.
-- `components/net/`: Wi-Fi (estación) y hora por SNTP. Solo lo usan el sistema y `main.c`; las apps preguntan con `sys_net_connected()` y `sys_time_synced()`. El SSID y la contraseña van en `idf.py menuconfig` → *Hey Biddy: Wi-Fi* (se guardan en `sdkconfig`, que no entra al repo).
+- `components/net/`: Wi-Fi (estación) y hora por SNTP. Solo lo usan el sistema y `main.c`; las apps usan `sys_net_connected()`, `sys_time_synced()` y `sys_wifi_*()`. La red se elige en la placa ya flasheada (**Ajustes → Wi-Fi**) y se guarda en NVS, namespace `net` (reservado). Al reflashear no se pierde.
 - `components/apps/<id>/`: una carpeta por app con las cinco funciones del contrato (`on_enter`, `on_knob`, `on_touch`, `on_tick`, `on_exit`).
 - `components/apps/registry.c`: la lista del menú. Agregar una app consiste en crear una carpeta nueva y agregar una línea en esta lista.
 
@@ -15,7 +15,7 @@
 
 1. **Partir siempre del repo más reciente** (`git pull` o clonar `UABCerick/HeyBiddy`). Nunca partir de un zip o de un archivo de una conversación anterior.
 2. **Tocar solo la carpeta de tu app.** Si hace falta cambiar algo compartido (`ui_core/`, `board/`, `storage/`, `registry.c`, `partitions.csv`, `sdkconfig.defaults`), hay que decirlo explícitamente, explicar por qué y mantenerlo compatible con las demás apps.
-3. **Datos aislados.** Cada app usa su propio namespace de NVS, igual a su `id`. Una app nunca lee ni borra el de otra.
+3. **Datos aislados.** Cada app usa su propio namespace de NVS, igual a su `id`. Una app nunca lee ni borra el de otra. `system` y `net` son del sistema.
 4. **No cambiar la fila `nvs` de `partitions.csv`.** Moverla o cambiar su tamaño borra los datos de todas las apps.
 5. **Compilar el firmware completo antes de entregar.** Un cambio está listo solo cuando `idf.py build` pasa con todas las apps.
 6. **Commits pequeños con el nombre de la app**, por ejemplo `notes: borrar con confirmación`. Después, `git push` a `main`.
@@ -44,7 +44,7 @@
 | Sistema (menú, gestor, gestos, almacenamiento, standby) | `ui_core/`, `storage/`, `board/` | fw 0.3.0 |
 | Reloj (hora por SNTP; manual como respaldo; ícono de Wi-Fi) | `apps/clock/` | v0.2.0 |
 | Contador (ejemplo y prueba de NVS) | `apps/counter/` | v0.1.0 |
-| Ajustes (brillo, vibración, tiempo de standby, estado del Wi-Fi) | `apps/settings/` | v0.2.0 |
+| Ajustes (brillo, vibración, tiempo de standby, elegir red Wi-Fi) | `apps/settings/` | v0.3.0 |
 | Arcilla (juego táctico, pantalla propia, contra Biddy en 3 niveles) | `apps/arcilla/` | v0.7.0 (ver `apps/arcilla/README.md` e `IA.md`) |
 | Notas, Alarmas, Biddy, Gato | `apps/notes`, `apps/alarms`, `apps/assistant`, `apps/tictactoe` | Por construir (Fase 1) |
 | Wi-Fi y hora por SNTP | `components/net/` (compartido) | v0.1.0 (Fase 1, hito 4) |

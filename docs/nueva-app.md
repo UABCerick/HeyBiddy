@@ -16,7 +16,7 @@ Dentro del archivo cambia `APP_ID`, el nombre, el ícono, el color, la versión 
 El `id`:
 - mide como máximo 15 letras, sin espacios (`notes`, `alarms`, `arcilla`);
 - es también el *namespace* de NVS donde la app guarda sus datos;
-- `system` y `launcher` están reservados.
+- `system`, `launcher` y `net` están reservados.
 
 Todos los `.c` de la carpeta (incluidas las subcarpetas) se compilan solos; las carpetas `host/` y `test/` se ignoran.
 
@@ -61,7 +61,7 @@ Reglas:
 - Para salir desde la app: `sys_go_home()`. Para abrir otra: `sys_open_app("clock")`.
 - Si creas una tarea propia (red, audio), no toques LVGL desde ella: usa `sys_run_on_ui(funcion, arg)`.
 - Incluye solo `app.h`, `sys.h`, `storage.h` y `biddy_fonts.h`. Nunca `board.h`.
-- **Red y hora:** `sys_net_connected()` dice si hay Wi-Fi ahora; `sys_time_synced()` si la hora vino de internet. La hora se lee con `time()` y `localtime_r()` (zona de Londres).
+- **Red y hora:** `sys_net_connected()` dice si hay Wi-Fi ahora; `sys_time_synced()` si la hora vino de internet. La red la elige el usuario en Ajustes → Wi-Fi (`sys_wifi_*` en `sys.h`). La hora se lee con `time()` y `localtime_r()` (zona de Londres).
 - **Standby:** tras el tiempo elegido en Ajustes sin tocar nada, la pantalla se apaga. Tu app sigue abierta y `on_tick` sigue llegando, pero no la perilla ni el touch; un doble tap la enciende y ese doble tap no llega a la app. Para encenderla desde la app (una alarma): `sys_wake()`. `sys_is_standby()` dice si está apagada.
 
 ## 4. Guardar datos
