@@ -42,6 +42,7 @@ static bool s_have_net;
 
 /* busqueda de redes */
 static volatile bool s_scanning;
+static volatile bool s_scan_ready;       /* termino la busqueda; falta leer los resultados */
 static int64_t s_scan_started_ms;
 #define SCAN_TIMEOUT_MS 10000
 static net_ap_t s_aps[MAX_APS];
@@ -85,7 +86,7 @@ static void schedule_retry(uint32_t ms)
 
 static void retry_cb(void *arg)
 {
-    if (!s_have_net || s_connected || s_scanning) return;
+    if (!s_have_net || s_connected || (s_scanning && !s_scan_ready)) return;   /* radio ocupada buscando */
     ESP_LOGI(TAG, "conectando a \"%s\"...", s_ssid);
     esp_wifi_connect();
 }
@@ -100,6 +101,8 @@ static void apply_config(void)
     esp_wifi_set_config(WIFI_IF_STA, &cfg);
 }
 
+/* Se llama desde la tarea de quien pide los resultados (la interfaz, 8 KB de pila),
+ * nunca desde la tarea de eventos, que solo tiene 2.3 KB. */
 static void collect_scan(void)
 {
     uint16_t n = 0;
@@ -166,11 +169,11 @@ static void on_event(void *arg, esp_event_base_t base, int32_t id, void *data)
         if (is_wrong_password(d->reason)) s_status = NET_WRONG_PASSWORD;
         else if (is_not_found(d->reason)) s_status = NET_NOT_FOUND;
         else if (s_status == NET_CONNECTED) s_status = NET_CONNECTING;
-        if (s_scanning) return;                  /* se reintenta al terminar la busqueda */
+        if (s_scanning && !s_scan_ready) return; /* se reintenta al terminar la busqueda */
         schedule_retry(s_retry_ms);
         s_retry_ms = s_retry_ms * 2 > RETRY_MAX_MS ? RETRY_MAX_MS : s_retry_ms * 2;
     } else if (base == WIFI_EVENT && id == WIFI_EVENT_SCAN_DONE) {
-        collect_scan();
+        s_scan_ready = true;                     /* los resultados se leen en net_scan_results */
         if (s_have_net && !s_connected) schedule_retry(300);
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         const ip_event_got_ip_t *e = data;
@@ -198,6 +201,7 @@ bool net_scan_start(void)
         esp_wifi_scan_stop();
     }
     s_scan_started_ms = esp_timer_get_time() / 1000;
+    s_scan_ready = false;
     ESP_LOGI(TAG, "buscando redes...");
 
     if (!s_connected) {
@@ -220,7 +224,10 @@ bool net_scan_start(void)
 
 int net_scan_results(net_ap_t *out, int max)
 {
-    if (s_scanning && esp_timer_get_time() / 1000 - s_scan_started_ms > SCAN_TIMEOUT_MS) {
+    if (s_scan_ready) {
+        s_scan_ready = false;
+        collect_scan();                          /* pone s_scanning en false */
+    } else if (s_scanning && esp_timer_get_time() / 1000 - s_scan_started_ms > SCAN_TIMEOUT_MS) {
         ESP_LOGW(TAG, "la busqueda no termino en %d s", SCAN_TIMEOUT_MS / 1000);
         esp_wifi_scan_stop();
         portENTER_CRITICAL(&s_lock);
