@@ -4,6 +4,7 @@
  *   perilla: moverse entre filas
  *   tocar en "Brillo": entrar/salir de edicion (la perilla cambia el valor)
  *   tocar en "Vibración": encender/apagar
+ *   tocar en "Pantalla oscura": entrar/salir de edicion (la perilla elige el tiempo del standby)
  */
 #include <stdio.h>
 #include "app.h"
@@ -11,12 +12,12 @@
 #include "biddy_fonts.h"
 #include "esp_heap_caps.h"
 
-#define SETTINGS_VERSION "0.1.0"
+#define SETTINGS_VERSION "0.2.0"
 #define ACCENT 0x9B8CFF
 #define ROW_GAP 48
 #define MAX_ROWS 40
 
-enum { ROW_BRIGHTNESS, ROW_HAPTIC, ROW_FIRMWARE, ROW_BOOTS, ROW_MEMORY, ROW_APPS_HEADER, ROW_FIRST_APP };
+enum { ROW_BRIGHTNESS, ROW_HAPTIC, ROW_STANDBY, ROW_WIFI, ROW_FIRMWARE, ROW_BOOTS, ROW_MEMORY, ROW_APPS_HEADER, ROW_FIRST_APP };
 
 static lv_obj_t *s_rows[MAX_ROWS];
 static int s_nrows;
@@ -24,14 +25,43 @@ static int s_sel;
 static bool s_editing;
 static lv_obj_t *s_title;
 
+/* opciones del standby, en segundos (0 = nunca) */
+static const uint16_t STANDBY_OPTS[] = {15, 30, 60, 120, 300, 600, 0};
+#define N_STANDBY_OPTS (int)(sizeof(STANDBY_OPTS) / sizeof(STANDBY_OPTS[0]))
+
+static void standby_text(uint16_t sec, char *buf, size_t len)
+{
+    if (sec == 0) snprintf(buf, len, "nunca");
+    else if (sec < 60) snprintf(buf, len, "%u s", sec);
+    else snprintf(buf, len, "%u min", sec / 60);
+}
+
+static int standby_index(void)
+{
+    uint16_t cur = sys_get_standby_s();
+    for (int i = 0; i < N_STANDBY_OPTS; i++)
+        if (STANDBY_OPTS[i] == cur) return i;
+    return 2;   /* 1 min */
+}
+
 static void row_text(int i, char *buf, size_t len)
 {
     switch (i) {
     case ROW_BRIGHTNESS:
-        snprintf(buf, len, s_editing ? "Brillo  < %d %% >" : "Brillo  %d %%", sys_get_brightness());
+        snprintf(buf, len, (s_editing && s_sel == i) ? "Brillo  < %d %% >" : "Brillo  %d %%", sys_get_brightness());
         break;
     case ROW_HAPTIC:
         snprintf(buf, len, "Vibración  %s", sys_get_haptic_enabled() ? "Sí" : "No");
+        break;
+    case ROW_STANDBY: {
+        char t[16];
+        standby_text(sys_get_standby_s(), t, sizeof(t));
+        snprintf(buf, len, (s_editing && s_sel == i) ? "Pantalla oscura  < %s >" : "Pantalla oscura  %s", t);
+        break;
+    }
+    case ROW_WIFI:
+        snprintf(buf, len, "Wi-Fi  %s%s", sys_net_connected() ? "conectado" : "sin conexión",
+                 sys_time_synced() ? " · hora ok" : "");
         break;
     case ROW_FIRMWARE:
         snprintf(buf, len, "Firmware  %s", sys_firmware_version());
@@ -112,6 +142,11 @@ static void settings_knob(int dir)
         if (b < 5) b = 5;
         if (b > 100) b = 100;
         sys_set_brightness((uint8_t)b);
+    } else if (s_editing && s_sel == ROW_STANDBY) {
+        int i = standby_index() + dir;
+        if (i < 0) i = 0;
+        if (i >= N_STANDBY_OPTS) i = N_STANDBY_OPTS - 1;
+        sys_set_standby_s(STANDBY_OPTS[i]);
     } else {
         s_sel += dir;
         if (s_sel < 0) s_sel = 0;
@@ -123,7 +158,7 @@ static void settings_knob(int dir)
 static void settings_touch(const touch_event_t *ev)
 {
     if (ev->type == TOUCH_TAP) {
-        if (s_sel == ROW_BRIGHTNESS) {
+        if (s_sel == ROW_BRIGHTNESS || s_sel == ROW_STANDBY) {
             s_editing = !s_editing;
         } else if (s_sel == ROW_HAPTIC) {
             sys_set_haptic_enabled(!sys_get_haptic_enabled());
@@ -137,7 +172,7 @@ static void settings_touch(const touch_event_t *ev)
 
 static void settings_tick(uint32_t dt_ms)
 {
-    if (s_sel >= ROW_FIRMWARE && s_sel <= ROW_MEMORY + 1) layout();  /* refresca la memoria libre */
+    if (!s_editing) layout();   /* refresca Wi-Fi y memoria libre */
 }
 
 const app_t app_settings = {
