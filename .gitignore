@@ -19,3 +19,7 @@ __pycache__/
 .DS_Store
 firmware/host/build/
 firmware/host/capturas/
+*.onnx
+*.onnx.json
+*.wav
+.venv/
