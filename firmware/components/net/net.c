@@ -42,6 +42,8 @@ static bool s_have_net;
 
 /* busqueda de redes */
 static volatile bool s_scanning;
+static int64_t s_scan_started_ms;
+#define SCAN_TIMEOUT_MS 10000
 static net_ap_t s_aps[MAX_APS];
 static int s_nap;
 static portMUX_TYPE s_lock = portMUX_INITIALIZER_UNLOCKED;
@@ -132,7 +134,8 @@ static void collect_scan(void)
     s_nap = k;
     s_scanning = false;
     portEXIT_CRITICAL(&s_lock);
-    ESP_LOGI(TAG, "busqueda: %d redes", k);
+    ESP_LOGI(TAG, "busqueda: %d redes (de %u vistas)", k, (unsigned)n);
+    for (int i = 0; i < k; i++) ESP_LOGI(TAG, "  %-32s %d dBm%s", tmp[i].ssid, tmp[i].rssi, tmp[i].secure ? "" : " abierta");
 }
 
 static bool is_wrong_password(uint8_t r)
@@ -188,7 +191,14 @@ bool net_scan_start(void)
     bool busy = s_scanning;
     s_scanning = true;
     portEXIT_CRITICAL(&s_lock);
-    if (busy) return true;
+    if (busy) {
+        /* una busqueda que no termina en 10 s se cancela y se vuelve a pedir */
+        if (esp_timer_get_time() / 1000 - s_scan_started_ms < SCAN_TIMEOUT_MS) return true;
+        ESP_LOGW(TAG, "la busqueda no termino: se cancela");
+        esp_wifi_scan_stop();
+    }
+    s_scan_started_ms = esp_timer_get_time() / 1000;
+    ESP_LOGI(TAG, "buscando redes...");
 
     if (!s_connected) {
         /* un intento de conexion en curso no deja buscar: se pausa y se retoma al terminar */
@@ -210,6 +220,15 @@ bool net_scan_start(void)
 
 int net_scan_results(net_ap_t *out, int max)
 {
+    if (s_scanning && esp_timer_get_time() / 1000 - s_scan_started_ms > SCAN_TIMEOUT_MS) {
+        ESP_LOGW(TAG, "la busqueda no termino en %d s", SCAN_TIMEOUT_MS / 1000);
+        esp_wifi_scan_stop();
+        portENTER_CRITICAL(&s_lock);
+        s_scanning = false;
+        s_nap = 0;
+        portEXIT_CRITICAL(&s_lock);
+        if (s_have_net && !s_connected) schedule_retry(300);
+    }
     portENTER_CRITICAL(&s_lock);
     int n = -1;
     if (!s_scanning) {
