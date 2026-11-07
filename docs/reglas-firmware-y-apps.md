@@ -7,6 +7,7 @@
 - `components/ui_core/`: el sistema. Contiene el **menú circular** (`launcher.c`), el **gestor de apps** y los gestos (`ui_core.c`), el **contrato de apps** (`app.h`) y los servicios para las apps (`sys.h`). Deslizar hacia abajo desde el borde de arriba siempre regresa al menú.
 - `components/board/`: todo el hardware. Solo lo usa el sistema.
 - `components/storage/`: datos en NVS, separados por app.
+- `components/net/`: Wi-Fi (estación) y hora por SNTP. Solo lo usan el sistema y `main.c`; las apps preguntan con `sys_net_connected()` y `sys_time_synced()`. El SSID y la contraseña van en `idf.py menuconfig` → *Hey Biddy: Wi-Fi* (se guardan en `sdkconfig`, que no entra al repo).
 - `components/apps/<id>/`: una carpeta por app con las cinco funciones del contrato (`on_enter`, `on_knob`, `on_touch`, `on_tick`, `on_exit`).
 - `components/apps/registry.c`: la lista del menú. Agregar una app consiste en crear una carpeta nueva y agregar una línea en esta lista.
 
@@ -40,10 +41,10 @@
 
 | App | Carpeta | Estado |
 | --- | --- | --- |
-| Sistema (menú, gestor, gestos, almacenamiento) | `ui_core/`, `storage/`, `board/` | v0.1.0 |
-| Reloj (hora manual hasta tener Wi-Fi) | `apps/clock/` | v0.1.0 |
+| Sistema (menú, gestor, gestos, almacenamiento, standby) | `ui_core/`, `storage/`, `board/` | fw 0.3.0 |
+| Reloj (hora por SNTP; manual como respaldo; ícono de Wi-Fi) | `apps/clock/` | v0.2.0 |
 | Contador (ejemplo y prueba de NVS) | `apps/counter/` | v0.1.0 |
-| Ajustes | `apps/settings/` | v0.1.0 |
+| Ajustes (brillo, vibración, tiempo de standby, estado del Wi-Fi) | `apps/settings/` | v0.2.0 |
 | Arcilla (juego táctico, pantalla propia, contra Biddy en 3 niveles) | `apps/arcilla/` | v0.7.0 (ver `apps/arcilla/README.md` e `IA.md`) |
 | Notas, Alarmas, Biddy, Gato | `apps/notes`, `apps/alarms`, `apps/assistant`, `apps/tictactoe` | Por construir (Fase 1) |
-| Wi-Fi y hora por SNTP | `components/net/` (nuevo, compartido) | Por construir (Fase 1, hito 4) |
+| Wi-Fi y hora por SNTP | `components/net/` (compartido) | v0.1.0 (Fase 1, hito 4) |
